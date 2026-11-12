@@ -2,40 +2,102 @@
 // DAILY IELTS ACADEMIC 15 — GEMINI AI GENERATOR & EXAMINER GRADING ENGINE
 // ==========================================================================
 
-const GEMINI_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+const DEFAULT_GEMINI_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-flash-latest',
+  'gemini-3.5-flash',
+  'gemini-3.0-flash'
+];
+
+let cachedDiscoveredModel = null;
+
+async function discoverAvailableFlashModel(apiKey) {
+  if (cachedDiscoveredModel) return cachedDiscoveredModel;
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const models = (data.models || []).filter((m) =>
+      (m.supportedGenerationMethods || []).includes('generateContent')
+    );
+    const flashModel =
+      models.find((m) => m.name.includes('gemini-3.8-flash')) ||
+      models.find((m) => m.name.includes('flash') && !m.name.includes('2.0') && !m.name.includes('1.5')) ||
+      models[0];
+    if (flashModel && flashModel.name) {
+      cachedDiscoveredModel = flashModel.name.replace(/^models\//, '');
+      return cachedDiscoveredModel;
+    }
+  } catch (e) {
+    // ignore discovery error
+  }
+  return null;
+}
+
+function parseModelJSON(rawText) {
+  const cleaned = String(rawText || '')
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  return JSON.parse(cleaned);
+}
 
 async function callGeminiJSON(apiKey, parts, temperature = 0.7) {
   let lastError = null;
-  for (const model of GEMINI_MODELS) {
+  const candidateModels = [...DEFAULT_GEMINI_MODELS];
+
+  const tryModel = async (model) => {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts }],
+        generationConfig: {
+          temperature,
+          responseMimeType: 'application/json'
+        }
+      })
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      const err = new Error(`Gemini API (${model}) HTTP ${res.status}: ${errText}`);
+      err.status = res.status;
+      throw err;
+    }
+    const data = await res.json();
+    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    if (!rawText) {
+      throw new Error(`Empty response from Gemini API (${model}).`);
+    }
+    return parseModelJSON(rawText);
+  };
+
+  for (const model of candidateModels) {
     try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts }],
-          generationConfig: {
-            temperature,
-            responseMimeType: 'application/json'
-          }
-        })
-      });
-      if (!res.ok) {
-        const errText = await res.text();
-        lastError = new Error(`Gemini API (${model}) HTTP ${res.status}: ${errText}`);
-        continue;
+      return await tryModel(model);
+    } catch (err) {
+      lastError = err;
+      // If 404 Not Found, continue to next model or auto-discover
+      if (err.status && err.status !== 404) {
+        break;
       }
-      const data = await res.json();
-      const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      if (!rawText) {
-        lastError = new Error('Empty response from Gemini API.');
-        continue;
-      }
-      return JSON.parse(rawText);
+    }
+  }
+
+  // Dynamic fallback: query /v1beta/models for the active flash model on this account
+  const discovered = await discoverAvailableFlashModel(apiKey);
+  if (discovered && !candidateModels.includes(discovered)) {
+    try {
+      return await tryModel(discovered);
     } catch (err) {
       lastError = err;
     }
   }
+
   throw lastError || new Error('Failed to connect to Gemini API.');
 }
 

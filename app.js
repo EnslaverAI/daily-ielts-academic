@@ -1087,8 +1087,11 @@ function renderEvaluationReport(task, evalResult, historyEntry) {
 
   const apiPromptBanner = evalResult.isHeuristicFallback
     ? `<div style="background:var(--amber-soft);border:1px solid var(--amber-border);color:var(--amber-warn);padding:0.75rem 1.25rem;font-size:0.84rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;">
-        <span><strong>Want deep sentence-by-sentence AI corrections?</strong> Connect your free Google Gemini API key and click Re-Submit.</span>
-        <button id="btn-eval-open-api" class="btn-secondary" type="button" style="padding:0.3rem 0.7rem;font-size:0.78rem;">Configure Gemini API Key</button>
+        <span><strong>Want deep sentence-by-sentence AI corrections?</strong> Click Re-Evaluate with Gemini AI (or check your API key in Settings).</span>
+        <div style="display:flex;gap:0.5rem;">
+          <button id="btn-eval-regrade-ai" class="btn-primary" type="button" style="padding:0.32rem 0.8rem;font-size:0.78rem;">&#10024; Re-Evaluate with Gemini AI</button>
+          <button id="btn-eval-open-api" class="btn-secondary" type="button" style="padding:0.3rem 0.7rem;font-size:0.78rem;">API Key Settings</button>
+        </div>
       </div>`
     : '';
 
@@ -1142,6 +1145,14 @@ function renderEvaluationReport(task, evalResult, historyEntry) {
       </div>
     </div>
   `;
+
+  document.getElementById('btn-eval-regrade-ai')?.addEventListener('click', () => {
+    if (!state.apiKey) {
+      document.getElementById('modal-settings').hidden = false;
+      return;
+    }
+    handleTaskSubmission();
+  });
 
   document.getElementById('btn-eval-open-api')?.addEventListener('click', () => {
     document.getElementById('modal-settings').hidden = false;
