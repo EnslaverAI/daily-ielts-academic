@@ -323,7 +323,7 @@ Return strict JSON with this exact structure:
 }`;
   } else if (section === 'writing') {
     if (resolvedWritingMode === 'task1') {
-      const chartTypes = ['bar', 'line', 'table'];
+      const chartTypes = ['bar', 'line', 'table', 'stacked'];
       const chosenChart = chartTypes[Math.floor(Math.random() * chartTypes.length)];
       schemaInstruction = `
 Generate an IELTS Academic Writing Task 1 data report workout (15-minute sprint, target 150 words) featuring a "${chosenChart}" chart/table.

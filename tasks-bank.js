@@ -1,6 +1,8 @@
 // ==========================================================================
-// DAILY IELTS ACADEMIC 15 — CURATED 24-TASK SEED BANK & SVG CHART RENDERER
+// DAILY IELTS ACADEMIC 15 — CURATED 52-TASK SEED BANK & SVG CHART RENDERER
 // ==========================================================================
+
+import { EXPANDED_SEED_TASKS } from './tasks-bank-expanded.js';
 
 function escapeXml(str) {
   return String(str ?? '')
@@ -11,9 +13,9 @@ function escapeXml(str) {
 }
 
 /**
- * Renders an IELTS Academic Writing Task 1 SVG chart or table from a structured spec.
+ * Renders an IELTS Academic Writing Task 1 SVG chart, table, or process diagram from a structured spec.
  * Supports: 'bar' (grouped bar), 'line' (multi-line trend), 'table' (academic data table),
- * and 'stacked' / 'pie' (proportional horizontal comparison).
+ * 'process' (industrial/natural process diagram), and 'stacked' (100% proportional breakdown).
  * Uses CSS variables so charts adapt cleanly to both Light and Dark focus themes.
  */
 export function renderTask1ChartSVG(spec) {
@@ -26,6 +28,82 @@ export function renderTask1ChartSVG(spec) {
   const series = Array.isArray(spec.series) ? spec.series : [];
   const palette = ['#1B4332', '#B45309', '#1E3A8A', '#7C2D12', '#0F766E'];
 
+  // 1. Academic Process / Lifecycle Flow Diagram
+  if (spec.chartType === 'process' && Array.isArray(spec.steps)) {
+    const stepsHtml = spec.steps
+      .map((st, idx) => {
+        const isLast = idx === spec.steps.length - 1;
+        const arrow = !isLast
+          ? `<div style="display:flex;align-items:center;justify-content:center;color:var(--accent-primary);font-weight:800;font-size:18px;padding:2px 0;">&darr;</div>`
+          : spec.isCyclical
+          ? `<div style="margin-top:6px;font-size:11px;font-weight:700;color:var(--accent-primary);text-align:center;">&#8635; Closed-Loop Recirculation to Stage 1</div>`
+          : '';
+        return `
+          <div style="background:var(--bg-elevated);border:1px solid var(--border-strong);border-left:4px solid ${palette[idx % palette.length]};border-radius:6px;padding:8px 12px;text-align:left;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+              <span style="font-family:var(--font-mono);font-size:11px;font-weight:700;color:var(--accent-primary);text-transform:uppercase;">${escapeXml(st.stage || `Stage ${idx + 1}`)}</span>
+              <strong style="font-size:13px;color:var(--text-primary);">${escapeXml(st.label || '')}</strong>
+            </div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-top:3px;">${escapeXml(st.detail || '')}</div>
+          </div>
+          ${arrow}
+        `;
+      })
+      .join('');
+
+    return `
+      <div style="padding:6px;text-align:left;">
+        <div style="font-weight:700;font-size:14px;margin-bottom:10px;text-align:center;color:var(--text-primary);">${title}</div>
+        <div style="display:flex;flex-direction:column;gap:2px;">
+          ${stepsHtml}
+        </div>
+      </div>
+    `;
+  }
+
+  // 2. Proportional 100% Stacked Horizontal Comparison Chart
+  if (spec.chartType === 'stacked') {
+    const rowsHtml = categories
+      .map((cat, cIdx) => {
+        const total = series.reduce((acc, s) => acc + (Number(s.values?.[cIdx]) || 0), 0) || 100;
+        const segments = series
+          .map((s, sIdx) => {
+            const val = Number(s.values?.[cIdx]) || 0;
+            const pct = Math.max(0, (val / total) * 100);
+            const color = palette[sIdx % palette.length];
+            return `<div title="${escapeXml(s.name)}: ${val}${unit}" style="width:${pct.toFixed(1)}%;background:${color};color:#fff;font-family:var(--font-mono);font-size:10.5px;font-weight:700;display:flex;align-items:center;justify-content:center;overflow:hidden;white-space:nowrap;padding:4px 0;">${pct >= 8 ? `${val}${unit}` : ''}</div>`;
+          })
+          .join('');
+        return `
+          <div style="margin-bottom:10px;">
+            <div style="font-size:12px;font-weight:700;color:var(--text-primary);margin-bottom:3px;text-align:left;">${cat}</div>
+            <div style="display:flex;width:100%;height:26px;border-radius:5px;overflow:hidden;border:1px solid var(--border-subtle);">
+              ${segments}
+            </div>
+          </div>
+        `;
+      })
+      .join('');
+
+    const legendHtml = series
+      .map((s, idx) => {
+        const color = palette[idx % palette.length];
+        return `<span style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;color:var(--text-primary);margin-right:14px;"><span style="width:11px;height:11px;border-radius:2px;background:${color};display:inline-block;"></span>${escapeXml(s.name)}</span>`;
+      })
+      .join('');
+
+    return `
+      <div style="padding:8px;">
+        <div style="font-weight:700;font-size:14px;margin-bottom:12px;text-align:center;color:var(--text-primary);">${title}</div>
+        ${rowsHtml}
+        <div style="margin-top:10px;text-align:center;display:flex;flex-wrap:wrap;justify-content:center;gap:6px;">
+          ${legendHtml}
+        </div>
+      </div>
+    `;
+  }
+
+  // 3. Academic Data Table
   if (spec.chartType === 'table') {
     const headers = ['Category / Indicator', ...categories]
       .map(
@@ -1807,5 +1885,7 @@ export const SEED_TASKS = [
       'Will real-time AI translation earbuds eventually make learning foreign languages unnecessary for international professionals?',
       'To what extent does having a single global lingua franca in science and aviation benefit or disadvantage non-native speakers?'
     ]
-  }
+  },
+  ...EXPANDED_SEED_TASKS
 ];
+
