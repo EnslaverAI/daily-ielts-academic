@@ -1,8 +1,9 @@
 // ==========================================================================
-// DAILY IELTS ACADEMIC 15 — CURATED 52-TASK SEED BANK & SVG CHART RENDERER
+// DAILY IELTS ACADEMIC 15 — CURATED 68-TASK SEED BANK & SVG CHART RENDERER
 // ==========================================================================
 
 import { EXPANDED_SEED_TASKS } from './tasks-bank-expanded.js';
+import { COMPLETE_MODES_TASKS } from './tasks-bank-complete-modes.js';
 
 function escapeXml(str) {
   return String(str ?? '')
@@ -13,10 +14,59 @@ function escapeXml(str) {
 }
 
 /**
- * Renders an IELTS Academic Writing Task 1 SVG chart, table, or process diagram from a structured spec.
- * Supports: 'bar' (grouped bar), 'line' (multi-line trend), 'table' (academic data table),
- * 'process' (industrial/natural process diagram), and 'stacked' (100% proportional breakdown).
- * Uses CSS variables so charts adapt cleanly to both Light and Dark focus themes.
+ * Renders an IELTS Listening Part 2 Floor Plan / Site Map (Locations A–G) with Compass Rose.
+ */
+export function renderListeningMapSVG(mapSpec) {
+  if (!mapSpec || typeof mapSpec !== 'object') return '';
+  const title = escapeXml(mapSpec.title || 'Site Orientation Plan (Locations A–G)');
+  const landmarks = Array.isArray(mapSpec.landmarks) ? mapSpec.landmarks : [];
+
+  const cellsHtml = landmarks
+    .map((lm) => {
+      const isEntrance = lm.code === 'ENTRANCE';
+      const isLandmark = lm.code === 'LANDMARK';
+      const bg = isEntrance
+        ? 'var(--amber-soft)'
+        : isLandmark
+        ? 'var(--accent-soft)'
+        : 'var(--bg-surface)';
+      const border = isEntrance
+        ? '2px solid var(--amber-warn)'
+        : isLandmark
+        ? '2px dashed var(--accent-primary)'
+        : '1.5px solid var(--border-strong)';
+      const badge =
+        !isEntrance && !isLandmark
+          ? `<div style="display:inline-block;background:var(--accent-primary);color:#fff;font-family:var(--font-mono);font-size:13px;font-weight:800;padding:2px 9px;border-radius:4px;margin-bottom:4px;">Location [ ${escapeXml(lm.code)} ]</div>`
+          : '';
+      return `
+        <div style="background:${bg};border:${border};border-radius:6px;padding:10px 8px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;min-height:74px;">
+          <span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);font-weight:700;">${escapeXml(lm.pos || '')}</span>
+          ${badge}
+          <strong style="font-size:11.5px;color:var(--text-primary);line-height:1.3;">${escapeXml(lm.label || '')}</strong>
+        </div>
+      `;
+    })
+    .join('');
+
+  return `
+    <div style="background:var(--bg-elevated);border:1px solid var(--border-strong);border-radius:8px;padding:12px;margin:10px 0;">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+        <div style="font-weight:700;font-size:13.5px;color:var(--text-primary);">${title}</div>
+        <div style="font-family:var(--font-mono);font-size:11px;font-weight:700;background:var(--bg-surface);border:1px solid var(--border-subtle);padding:3px 8px;border-radius:99px;color:var(--accent-primary);">
+          &#129517; Compass: N &uarr; | W &larr; &rarr; E | S &darr;
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:8px;">
+        ${cellsHtml}
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * Renders an IELTS Academic Writing Task 1 SVG chart, table, map, mixed combo, or process diagram.
+ * Supports: 'bar', 'line', 'table', 'process', 'stacked', 'map' (Before/After), and 'mixed' (Pie + Bar).
  */
 export function renderTask1ChartSVG(spec) {
   if (!spec || typeof spec !== 'object') return '';
@@ -27,6 +77,131 @@ export function renderTask1ChartSVG(spec) {
     : ['Category 1', 'Category 2', 'Category 3', 'Category 4'];
   const series = Array.isArray(spec.series) ? spec.series : [];
   const palette = ['#1B4332', '#B45309', '#1E3A8A', '#7C2D12', '#0F766E'];
+
+  // 0A. Before vs. After Map / Floor Plan Comparison
+  if (spec.chartType === 'map' && Array.isArray(spec.beforeZones) && Array.isArray(spec.afterZones)) {
+    const statusStyle = (status) => {
+      if (status === 'demolished')
+        return 'background:var(--crimson-soft);border:1px dashed var(--crimson-err);';
+      if (status === 'new')
+        return 'background:var(--accent-soft);border:1.5px solid var(--accent-primary);';
+      if (status === 'green')
+        return 'background:var(--emerald-soft);border:1.5px solid var(--emerald-ok);';
+      if (status === 'expanded')
+        return 'background:var(--amber-soft);border:1.5px solid var(--amber-warn);';
+      return 'background:var(--bg-surface);border:1px solid var(--border-strong);';
+    };
+
+    const renderGrid = (zones) =>
+      zones
+        .map(
+          (z) => `
+        <div style="${statusStyle(z.status)}border-radius:5px;padding:7px 6px;min-height:60px;display:flex;flex-direction:column;justify-content:center;text-align:center;">
+          <span style="font-family:var(--font-mono);font-size:9.5px;font-weight:700;color:var(--text-muted);">${escapeXml(z.pos)}</span>
+          <span style="font-size:11px;font-weight:600;color:var(--text-primary);line-height:1.25;">${escapeXml(z.label)}</span>
+        </div>`
+        )
+        .join('');
+
+    return `
+      <div style="padding:6px;text-align:left;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:8px;">
+          <strong style="font-size:13.5px;color:var(--text-primary);">${title}</strong>
+          <span style="font-family:var(--font-mono);font-size:11px;font-weight:700;color:var(--accent-primary);">&#129517; N &uarr; | W &larr; &rarr; E | S &darr;</span>
+        </div>
+        ${
+          spec.waterFeature
+            ? `<div style="background:#DBEAFE;color:#1E3A8A;font-size:11px;font-weight:700;text-align:center;padding:4px;border-radius:4px;margin-bottom:8px;">&#127754; Northern Boundary: ${escapeXml(spec.waterFeature)}</div>`
+            : ''
+        }
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(230px, 1fr));gap:12px;">
+          <div style="background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:6px;padding:8px;">
+            <div style="font-size:12px;font-weight:700;text-align:center;margin-bottom:6px;color:var(--text-primary);">${escapeXml(spec.beforeTitle || 'Map A — Past Layout')}</div>
+            <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:5px;">
+              ${renderGrid(spec.beforeZones)}
+            </div>
+          </div>
+          <div style="background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:6px;padding:8px;">
+            <div style="font-size:12px;font-weight:700;text-align:center;margin-bottom:6px;color:var(--text-primary);">${escapeXml(spec.afterTitle || 'Map B — Present / Planned Layout')}</div>
+            <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:5px;">
+              ${renderGrid(spec.afterZones)}
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:10px;justify-content:center;margin-top:8px;font-size:10.5px;color:var(--text-secondary);">
+          <span>&#9632; <strong>Unchanged</strong></span>
+          <span style="color:var(--crimson-err);">&#9632; <strong>Demolished/Removed</strong></span>
+          <span style="color:var(--accent-primary);">&#9632; <strong>New Construction</strong></span>
+          <span style="color:var(--emerald-ok);">&#9632; <strong>Green/Pedestrian Zone</strong></span>
+          <span style="color:var(--amber-warn);">&#9632; <strong>Converted/Expanded</strong></span>
+        </div>
+      </div>
+    `;
+  }
+
+  // 0B. Mixed / Combo Chart (Pie Breakdown + Comparative Horizontal Bar Chart)
+  if (spec.chartType === 'mixed' && Array.isArray(spec.pieSlices) && Array.isArray(spec.barItems)) {
+    const pieRows = spec.pieSlices
+      .map((sl, idx) => {
+        const col = palette[idx % palette.length];
+        const val = Number(sl.value) || 0;
+        return `
+          <div style="margin-bottom:7px;">
+            <div style="display:flex;justify-content:space-between;font-size:11.5px;font-weight:600;color:var(--text-primary);margin-bottom:2px;">
+              <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${col};margin-right:5px;"></span>${escapeXml(sl.name)}</span>
+              <span style="font-family:var(--font-mono);font-weight:700;">${val}%</span>
+            </div>
+            <div style="height:8px;background:var(--bg-subtle);border-radius:99px;overflow:hidden;">
+              <div style="width:${Math.min(100, val)}%;height:100%;background:${col};"></div>
+            </div>
+          </div>
+        `;
+      })
+      .join('');
+
+    const barRows = spec.barItems
+      .map((bi) => {
+        const v1 = Number(bi.v1) || 0;
+        const v2 = Number(bi.v2) || 0;
+        const bUnit = escapeXml(spec.barUnit || '%');
+        return `
+          <div style="margin-bottom:8px;">
+            <div style="font-size:11.5px;font-weight:600;color:var(--text-primary);margin-bottom:2px;">${escapeXml(bi.label)}</div>
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;">
+              <span style="font-family:var(--font-mono);font-size:10px;width:34px;color:var(--text-muted);">${escapeXml(bi.s1Name || '2010')}</span>
+              <div style="flex:1;height:10px;background:var(--bg-subtle);border-radius:3px;overflow:hidden;">
+                <div style="width:${Math.min(100, v1)}%;height:100%;background:${palette[1]};"></div>
+              </div>
+              <span style="font-family:var(--font-mono);font-size:10.5px;font-weight:700;width:34px;text-align:right;">${v1}${bUnit}</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <span style="font-family:var(--font-mono);font-size:10px;width:34px;color:var(--text-muted);">${escapeXml(bi.s2Name || '2025')}</span>
+              <div style="flex:1;height:10px;background:var(--bg-subtle);border-radius:3px;overflow:hidden;">
+                <div style="width:${Math.min(100, v2)}%;height:100%;background:${palette[0]};"></div>
+              </div>
+              <span style="font-family:var(--font-mono);font-size:10.5px;font-weight:700;width:34px;text-align:right;">${v2}${bUnit}</span>
+            </div>
+          </div>
+        `;
+      })
+      .join('');
+
+    return `
+      <div style="padding:6px;text-align:left;">
+        <div style="font-weight:700;font-size:13.5px;margin-bottom:10px;text-align:center;color:var(--text-primary);">${title}</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));gap:12px;">
+          <div style="background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:6px;padding:10px;">
+            <div style="font-size:12px;font-weight:700;margin-bottom:8px;color:var(--accent-primary);">Chart A: ${escapeXml(spec.pieTitle || 'Proportional Breakdown (%)')}</div>
+            ${pieRows}
+          </div>
+          <div style="background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:6px;padding:10px;">
+            <div style="font-size:12px;font-weight:700;margin-bottom:8px;color:var(--accent-primary);">Chart B: ${escapeXml(spec.barTitle || 'Comparative Indicator')}</div>
+            ${barRows}
+          </div>
+        </div>
+      </div>
+    `;
+  }
 
   // 1. Academic Process / Lifecycle Flow Diagram
   if (spec.chartType === 'process' && Array.isArray(spec.steps)) {
@@ -1886,6 +2061,8 @@ export const SEED_TASKS = [
       'To what extent does having a single global lingua franca in science and aviation benefit or disadvantage non-native speakers?'
     ]
   },
-  ...EXPANDED_SEED_TASKS
+  ...EXPANDED_SEED_TASKS,
+  ...COMPLETE_MODES_TASKS
 ];
+
 

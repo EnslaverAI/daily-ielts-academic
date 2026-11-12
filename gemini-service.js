@@ -629,7 +629,11 @@ const NUMBER_WORDS_MAP = {
   'thirty-four': '34',
   'thirty-five': '35',
   forty: '40',
-  'ninety-five': '95'
+  'ninety-five': '95',
+  sixteenth: '16',
+  '16th': '16',
+  fourteenth: '14',
+  '14th': '14'
 };
 
 function normalizeAnswerToken(str) {
@@ -647,7 +651,30 @@ function normalizeAnswerToken(str) {
   return s;
 }
 
+function extractMultiSelectLetters(str) {
+  const parts = String(str ?? '')
+    .split(/[,;&/]+|\band\b/i)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const letters = [];
+  for (const p of parts) {
+    const m = p.match(/^([A-G])\b/i);
+    if (m) {
+      letters.push(m[1].toUpperCase());
+    } else {
+      letters.push(normalizeAnswerToken(p));
+    }
+  }
+  return Array.from(new Set(letters)).sort().join(', ');
+}
+
 function isObjectiveAnswerMatch(q, rawUser) {
+  if (q.type === 'mcq_multi') {
+    const userMulti = extractMultiSelectLetters(rawUser);
+    const ansMulti = extractMultiSelectLetters(q.answer);
+    return Boolean(userMulti && ansMulti && userMulti === ansMulti);
+  }
+
   const userNorm = normalizeAnswerToken(rawUser);
   if (!userNorm) return false;
 
@@ -658,8 +685,8 @@ function isObjectiveAnswerMatch(q, rawUser) {
 
   // Also allow matching MCQ by option letter (e.g. "B" matches "B) Installing them...")
   if (q.type === 'mcq' && q.answer) {
-    const ansLetter = String(q.answer).trim().slice(0, 2).toLowerCase().replace(/[^a-d]/g, '');
-    const userLetter = String(rawUser).trim().slice(0, 2).toLowerCase().replace(/[^a-d]/g, '');
+    const ansLetter = String(q.answer).trim().slice(0, 2).toLowerCase().replace(/[^a-g]/g, '');
+    const userLetter = String(rawUser).trim().slice(0, 2).toLowerCase().replace(/[^a-g]/g, '');
     if (ansLetter && userLetter && ansLetter === userLetter && String(rawUser).trim().length <= 3) {
       return true;
     }
@@ -842,3 +869,247 @@ export function evaluateSubmissionLocally(task, userSubmission) {
       'Connect your Gemini API key in Settings to generate a customized Band 8.5 model rewrite of your exact arguments.'
   };
 }
+
+// ==========================================================================
+// GEMINI NEURAL MULTI-SPEAKER TTS ENGINE + INDEXEDDB WAV AUDIO CACHE (FREE)
+// ==========================================================================
+
+const memoryAudioUrlCache = new Map();
+const IDB_NAME = 'ielts15_audio_cache_db_v1';
+const IDB_STORE = 'audio_blobs';
+
+function openAudioCacheDB() {
+  return new Promise((resolve) => {
+    if (typeof indexedDB === 'undefined') return resolve(null);
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) {
+        db.createObjectStore(IDB_STORE);
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => resolve(null);
+  });
+}
+
+export async function getCachedListeningAudioUrl(taskId) {
+  if (!taskId) return null;
+  if (memoryAudioUrlCache.has(taskId)) {
+    return memoryAudioUrlCache.get(taskId);
+  }
+  try {
+    const db = await openAudioCacheDB();
+    if (!db) return null;
+    const blob = await new Promise((resolve) => {
+      const tx = db.transaction(IDB_STORE, 'readonly');
+      const req = tx.objectStore(IDB_STORE).get(taskId);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    });
+    if (blob instanceof Blob) {
+      const url = URL.createObjectURL(blob);
+      memoryAudioUrlCache.set(taskId, url);
+      return url;
+    }
+  } catch (e) {
+    // ignore cache read errors
+  }
+  return null;
+}
+
+async function saveListeningAudioBlobToCache(taskId, blob) {
+  if (!taskId || !(blob instanceof Blob)) return;
+  try {
+    const db = await openAudioCacheDB();
+    if (!db) return;
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put(blob, taskId);
+  } catch (e) {
+    // ignore cache write errors
+  }
+}
+
+function pcmBase64ToWavBlob(base64Data, mimeType = 'audio/L16;rate=24000') {
+  const binaryStr = atob(base64Data);
+  const pcmLen = binaryStr.length;
+  const pcmBytes = new Uint8Array(pcmLen);
+  for (let i = 0; i < pcmLen; i++) {
+    pcmBytes[i] = binaryStr.charCodeAt(i);
+  }
+
+  // If the returned bytes already start with "RIFF" (WAV) or "ID3"/MP3, wrap directly
+  if (
+    pcmLen > 12 &&
+    pcmBytes[0] === 0x52 &&
+    pcmBytes[1] === 0x49 &&
+    pcmBytes[2] === 0x46 &&
+    pcmBytes[3] === 0x46
+  ) {
+    return new Blob([pcmBytes], { type: 'audio/wav' });
+  }
+
+  const rateMatch = String(mimeType).match(/rate=(\d+)/i);
+  const sampleRate = rateMatch ? parseInt(rateMatch[1], 10) : 24000;
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
+  const blockAlign = (numChannels * bitsPerSample) / 8;
+
+  const wavBuffer = new ArrayBuffer(44 + pcmLen);
+  const view = new DataView(wavBuffer);
+
+  const writeString = (offset, str) => {
+    for (let i = 0; i < str.length; i++) {
+      view.setUint8(offset + i, str.charCodeAt(i));
+    }
+  };
+
+  writeString(0, 'RIFF');
+  view.setUint32(4, 36 + pcmLen, true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true); // PCM chunk size
+  view.setUint16(20, 1, true); // PCM format = 1
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+  writeString(36, 'data');
+  view.setUint32(40, pcmLen, true);
+
+  new Uint8Array(wavBuffer, 44).set(pcmBytes);
+  return new Blob([wavBuffer], { type: 'audio/wav' });
+}
+
+async function discoverTtsModels(apiKey) {
+  const candidates = [
+    'gemini-2.5-flash-preview-tts',
+    'gemini-2.5-pro-preview-tts'
+  ];
+  try {
+    const resp = await fetch(`${GEMINI_BASE_URL}/models?key=${encodeURIComponent(apiKey)}`);
+    if (resp.ok) {
+      const data = await resp.json();
+      const ttsModels = (data.models || [])
+        .map((m) => String(m.name || '').replace(/^models\//, ''))
+        .filter((name) => /tts/i.test(name));
+      for (const m of ttsModels) {
+        if (!candidates.includes(m)) candidates.unshift(m);
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+  return candidates;
+}
+
+/**
+ * Generates high-realism multi-speaker studio audio using the user's free Gemini API key,
+ * converts raw 24kHz PCM to a playable WAV Blob with full scrubber support, and caches in IndexedDB.
+ */
+export async function synthesizeListeningAudioWithGemini(apiKey, task) {
+  if (!apiKey) {
+    throw new Error('Please connect your free Google Gemini API key in Settings first.');
+  }
+  const cached = await getCachedListeningAudioUrl(task.id);
+  if (cached) return cached;
+
+  const lines = task.script || [];
+  if (!lines.length) {
+    throw new Error('No listening script found for this task.');
+  }
+
+  // Map speakers to 2 distinct studio voices (SpeakerA = Kore, SpeakerB = Puck) for multiSpeakerVoiceConfig
+  const uniqueSpeakers = Array.from(new Set(lines.map((l) => l.speaker)));
+  const isMultiSpeaker = uniqueSpeakers.length >= 2;
+
+  let promptText = '';
+  let speechConfig = null;
+
+  if (isMultiSpeaker) {
+    const speakerRoleMap = new Map();
+    uniqueSpeakers.forEach((sp, idx) => {
+      speakerRoleMap.set(sp, idx % 2 === 0 ? 'SpeakerA' : 'SpeakerB');
+    });
+
+    const formattedDialogue = lines
+      .map((l) => `${speakerRoleMap.get(l.speaker)}: ${l.text}`)
+      .join('\n\n');
+
+    promptText = `Read the following IELTS Academic Listening conversation naturally at a clear, measured university pace with realistic pauses between turns:\n\n${formattedDialogue}`;
+    speechConfig = {
+      multiSpeakerVoiceConfig: {
+        speakerVoiceConfigs: [
+          {
+            speaker: 'SpeakerA',
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } }
+          },
+          {
+            speaker: 'SpeakerB',
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } }
+          }
+        ]
+      }
+    };
+  } else {
+    const formattedMonologue = lines.map((l) => l.text).join('\n\n');
+    promptText = `Read the following IELTS Academic Listening university lecture clearly and naturally with measured pauses between paragraphs:\n\n${formattedMonologue}`;
+    speechConfig = {
+      voiceConfig: {
+        prebuiltVoiceConfig: { voiceName: 'Charon' }
+      }
+    };
+  }
+
+  const ttsModels = await discoverTtsModels(apiKey);
+  let lastErr = null;
+
+  for (const modelName of ttsModels) {
+    try {
+      const resp = await fetch(
+        `${GEMINI_BASE_URL}/models/${modelName}:generateContent?key=${encodeURIComponent(apiKey)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: promptText }] }],
+            generationConfig: {
+              responseModalities: ['AUDIO'],
+              speechConfig
+            }
+          })
+        }
+      );
+
+      if (!resp.ok) {
+        const errTxt = await resp.text().catch(() => '');
+        lastErr = new Error(`Gemini TTS (${modelName}) HTTP ${resp.status}: ${errTxt.slice(0, 180)}`);
+        continue;
+      }
+
+      const data = await resp.json();
+      const parts = data?.candidates?.[0]?.content?.parts || [];
+      const audioPart = parts.find((p) => p.inlineData && p.inlineData.data);
+      if (!audioPart) {
+        lastErr = new Error(`Gemini TTS (${modelName}) returned no audio data.`);
+        continue;
+      }
+
+      const wavBlob = pcmBase64ToWavBlob(
+        audioPart.inlineData.data,
+        audioPart.inlineData.mimeType
+      );
+      await saveListeningAudioBlobToCache(task.id, wavBlob);
+      const url = URL.createObjectURL(wavBlob);
+      memoryAudioUrlCache.set(task.id, url);
+      return url;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
+  throw lastErr || new Error('Gemini TTS audio generation failed.');
+}
+

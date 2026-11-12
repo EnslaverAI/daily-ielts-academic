@@ -2,12 +2,14 @@
 // DAILY IELTS ACADEMIC 15 — MAIN APPLICATION CONTROLLER
 // ==========================================================================
 
-import { SEED_TASKS, renderTask1ChartSVG } from './tasks-bank.js';
+import { SEED_TASKS, renderTask1ChartSVG, renderListeningMapSVG } from './tasks-bank.js';
 import {
   generateFreshTaskWithGemini,
   evaluateSubmissionWithGemini,
   evaluateSubmissionLocally,
-  verifyGeminiApiKey
+  verifyGeminiApiKey,
+  synthesizeListeningAudioWithGemini,
+  getCachedListeningAudioUrl
 } from './gemini-service.js';
 
 const STORAGE_KEYS = {
@@ -41,10 +43,19 @@ const state = {
   prepSeconds: 60,
   prepInterval: null,
 
-  // Listening TTS state
+  // Listening TTS & Studio Audio state
   isPlayingAudio: false,
   ttsKeepAliveInterval: null,
+  ttsPauseTimeout: null,
   playbackRate: 1.0,
+  accentMode: 'auto', // 'auto' | 'en-GB' | 'en-AU' | 'en-US'
+  strictListeningMode: false,
+  listeningPlayCount: 0,
+  currentLineIdx: 0,
+
+  // Speaking Real Exam Blind Mode state
+  speakingBlindMode: false,
+  blindStepIdx: 0,
 
   // Speaking Microphone Recorder state
   isRecording: false,
@@ -278,6 +289,24 @@ function cleanupRecordedAudioUrl() {
   state.recordedAudioObj = null;
 }
 
+function renderReferenceBoxHtml(task) {
+  if (!task.referenceBox || !Array.isArray(task.referenceBox.items)) return '';
+  const itemsHtml = task.referenceBox.items
+    .map(
+      (item) =>
+        `<div style="font-size:0.84rem;color:var(--text-primary);padding:0.22rem 0;border-bottom:1px dashed var(--border-subtle);">${escapeHtml(item)}</div>`
+    )
+    .join('');
+  return `
+    <div style="background:var(--bg-elevated);border:1.5px solid var(--accent-primary);border-radius:var(--radius-sm);padding:0.75rem 1rem;margin-bottom:1rem;">
+      <div style="font-family:var(--font-mono);font-size:0.76rem;font-weight:700;text-transform:uppercase;color:var(--accent-primary);margin-bottom:0.35rem;">
+        &#128203; ${escapeHtml(task.referenceBox.title || 'Reference Box')}
+      </div>
+      <div>${itemsHtml}</div>
+    </div>
+  `;
+}
+
 function loadTaskIntoWorkspace(task) {
   stopListeningAudio();
   stopSpeakingRecording();
@@ -285,6 +314,9 @@ function loadTaskIntoWorkspace(task) {
   cleanupRecordedAudioUrl();
 
   state.currentTask = task;
+  state.listeningPlayCount = 0;
+  state.currentLineIdx = 0;
+  state.blindStepIdx = 0;
   resetTimer();
 
   // Hide previous evaluation report
@@ -325,6 +357,7 @@ function renderLeftStimulus(task) {
     container.innerHTML = `
       <h2 class="stimulus-title">${escapeHtml(task.title)}</h2>
       <div class="stimulus-instructions">${escapeHtml(task.instructions)}</div>
+      ${renderReferenceBoxHtml(task)}
       <div class="reading-toolbar">
         <span>Academic Passage (${(task.paragraphs || []).length} Paragraphs)</span>
         <div style="display:flex;gap:0.4rem;">
@@ -352,7 +385,7 @@ function renderLeftStimulus(task) {
     const chartSvgHtml = task.chartSpec
       ? `<figure class="chart-figure">
           ${renderTask1ChartSVG(task.chartSpec)}
-          <figcaption class="chart-caption">Figure 1 — Academic Data Reference for Writing Task 1</figcaption>
+          <figcaption class="chart-caption">Figure 1 — Official IELTS Academic Task 1 Visual Reference</figcaption>
         </figure>`
       : '';
 
@@ -368,7 +401,7 @@ function renderLeftStimulus(task) {
         <ul style="padding-left:1.2rem;margin-top:0.35rem;">
           <li><strong>${task.subMode === 'task1' ? 'Task Achievement' : 'Task Response'} (25%):</strong> ${
       task.subMode === 'task1'
-        ? 'Clear overview of main trends + accurate key figure comparisons.'
+        ? 'Clear overview of main trends/spatial changes + accurate key comparisons.'
         : 'Clear position throughout + well-supported analytical body arguments.'
     }</li>
           <li><strong>Coherence &amp; Cohesion (25%):</strong> Logical paragraphing and natural academic linking devices.</li>
@@ -388,20 +421,50 @@ function renderLeftStimulus(task) {
     const transcriptHtml = (task.script || [])
       .map(
         (line, idx) => `
-        <div class="transcript-line" data-line-idx="${idx}">
+        <div class="transcript-line" data-line-idx="${idx}" title="Click to jump playback to Turn ${idx + 1}" style="cursor:pointer;">
           <span class="transcript-speaker">${escapeHtml(line.speaker)}:</span>
           <span>${escapeHtml(line.text)}</span>
         </div>`
       )
       .join('');
 
+    const mapHtml = task.mapSpec ? renderListeningMapSVG(task.mapSpec) : '';
+
     container.innerHTML = `
       <h2 class="stimulus-title">${escapeHtml(task.title)}</h2>
       <div class="stimulus-instructions">${escapeHtml(task.instructions)}</div>
+      ${renderReferenceBoxHtml(task)}
+      ${mapHtml}
 
       <div class="listening-player-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.65rem;padding-bottom:0.55rem;border-bottom:1px solid var(--border-subtle);">
+          <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+            <span style="font-family:var(--font-mono);font-size:0.74rem;font-weight:700;color:var(--accent-primary);text-transform:uppercase;">
+              &#127911; Dual Audio Studio
+            </span>
+            <label style="display:inline-flex;align-items:center;gap:0.35rem;font-size:0.76rem;font-weight:600;color:var(--text-secondary);cursor:pointer;">
+              <input type="checkbox" id="chk-strict-listening" ${state.strictListeningMode ? 'checked' : ''} />
+              &#127919; Strict Exam Mode (1 Play Only &bull; Hide Transcript)
+            </label>
+          </div>
+          <button id="btn-generate-studio-audio" class="btn-ai" type="button" style="padding:0.26rem 0.7rem;font-size:0.75rem;">
+            &#10024; Generate Studio Neural Audio (Free AI)
+          </button>
+        </div>
+
+        <div id="studio-audio-wrap" style="margin-bottom:0.75rem;padding:0.6rem 0.75rem;background:var(--accent-soft);border:1px solid var(--accent-primary);border-radius:var(--radius-sm);" hidden>
+          <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.4rem;margin-bottom:0.35rem;">
+            <strong id="studio-audio-status" style="font-size:0.78rem;color:var(--accent-primary);">&#10024; Gemini Multi-Speaker Neural Studio Audio Ready</strong>
+            <div style="display:flex;gap:0.35rem;">
+              <button id="btn-studio-rew" class="btn-secondary" type="button" style="padding:0.15rem 0.5rem;font-size:0.72rem;">&#8630; -5s</button>
+              <button id="btn-studio-fwd" class="btn-secondary" type="button" style="padding:0.15rem 0.5rem;font-size:0.72rem;">+5s &#8631;</button>
+            </div>
+          </div>
+          <audio id="gemini-studio-audio" controls style="width:100%;height:36px;"></audio>
+        </div>
+
         <div class="audio-controls-row">
-          <button id="btn-play-listening" class="play-btn-large" type="button" title="Play / Stop Academic Audio">
+          <button id="btn-play-listening" class="play-btn-large" type="button" title="Play / Stop Multi-Accent Browser Audio">
             <span id="listening-play-icon">&#9654;</span>
           </button>
           <div class="audio-progress-wrap">
@@ -412,11 +475,21 @@ function renderLeftStimulus(task) {
               <div id="audio-progress-fill" class="audio-progress-fill"></div>
             </div>
           </div>
-          <select id="listening-speed-select" class="submode-select" aria-label="Audio Speed">
-            <option value="0.9" ${state.playbackRate === 0.9 ? 'selected' : ''}>0.9x Calm</option>
-            <option value="1" ${state.playbackRate === 1.0 ? 'selected' : ''}>1.0x Exam Pace</option>
-            <option value="1.1" ${state.playbackRate === 1.1 ? 'selected' : ''}>1.1x Brisk</option>
-          </select>
+          <div style="display:flex;gap:0.3rem;align-items:center;flex-wrap:wrap;">
+            <button id="btn-prev-turn" class="btn-secondary" type="button" title="Previous Spoken Turn" style="padding:0.3rem 0.55rem;font-size:0.75rem;">&#9664;</button>
+            <button id="btn-next-turn" class="btn-secondary" type="button" title="Next Spoken Turn" style="padding:0.3rem 0.55rem;font-size:0.75rem;">&#9654;</button>
+            <select id="listening-accent-select" class="submode-select" aria-label="Voice Accent" style="font-size:0.75rem;padding:0.3rem 0.45rem;">
+              <option value="auto" ${state.accentMode === 'auto' ? 'selected' : ''}>Accents: UK/AU/US Mix</option>
+              <option value="en-GB" ${state.accentMode === 'en-GB' ? 'selected' : ''}>British (en-GB)</option>
+              <option value="en-AU" ${state.accentMode === 'en-AU' ? 'selected' : ''}>Australian (en-AU)</option>
+              <option value="en-US" ${state.accentMode === 'en-US' ? 'selected' : ''}>North American (en-US)</option>
+            </select>
+            <select id="listening-speed-select" class="submode-select" aria-label="Audio Speed" style="font-size:0.75rem;padding:0.3rem 0.45rem;">
+              <option value="0.9" ${state.playbackRate === 0.9 ? 'selected' : ''}>0.9x Calm</option>
+              <option value="1" ${state.playbackRate === 1.0 ? 'selected' : ''}>1.0x Exam Pace</option>
+              <option value="1.1" ${state.playbackRate === 1.1 ? 'selected' : ''}>1.1x Brisk</option>
+            </select>
+          </div>
         </div>
 
         <label for="listening-scratchpad" style="display:block;font-size:0.78rem;font-weight:600;color:var(--text-muted);margin-top:0.9rem;">
@@ -425,8 +498,10 @@ function renderLeftStimulus(task) {
         <textarea id="listening-scratchpad" class="listening-scratchpad" placeholder="Type rough listening notes here...">${escapeHtml(scratchpadText)}</textarea>
 
         <div style="margin-top:0.75rem;display:flex;justify-content:space-between;align-items:center;">
-          <span style="font-size:0.76rem;color:var(--text-muted);">Transcript unlocks automatically after submission.</span>
-          <button id="btn-toggle-transcript" class="btn-secondary" type="button" style="padding:0.25rem 0.65rem;font-size:0.75rem;">
+          <span style="font-size:0.76rem;color:var(--text-muted);">
+            ${state.strictListeningMode ? 'Strict Exam Mode active: Transcript locked until you submit.' : 'Tip: Click any transcript line below to jump audio to that turn.'}
+          </span>
+          <button id="btn-toggle-transcript" class="btn-secondary" type="button" style="padding:0.25rem 0.65rem;font-size:0.75rem;" ${state.strictListeningMode ? 'disabled' : ''}>
             Show / Hide Transcript
           </button>
         </div>
@@ -437,13 +512,65 @@ function renderLeftStimulus(task) {
       </div>
     `;
 
+    // Check if Gemini Studio Neural WAV is already cached in IndexedDB for this task
+    getCachedListeningAudioUrl(task.id).then((cachedUrl) => {
+      if (cachedUrl && state.currentTask?.id === task.id) {
+        mountStudioAudioUrl(cachedUrl);
+      }
+    });
+
+    document.getElementById('chk-strict-listening')?.addEventListener('change', (e) => {
+      state.strictListeningMode = Boolean(e.target.checked);
+      renderLeftStimulus(task);
+    });
+
+    document.getElementById('btn-generate-studio-audio')?.addEventListener('click', () => {
+      handleGenerateStudioAudio(task);
+    });
+
+    document.getElementById('btn-studio-rew')?.addEventListener('click', () => {
+      const aud = document.getElementById('gemini-studio-audio');
+      if (aud) aud.currentTime = Math.max(0, aud.currentTime - 5);
+    });
+
+    document.getElementById('btn-studio-fwd')?.addEventListener('click', () => {
+      const aud = document.getElementById('gemini-studio-audio');
+      if (aud) aud.currentTime = Math.min(aud.duration || 9999, aud.currentTime + 5);
+    });
+
     document.getElementById('btn-play-listening')?.addEventListener('click', () => {
       startTimerIfNotRunning();
-      toggleListeningAudio(task);
+      toggleListeningAudio(task, state.currentLineIdx || 0);
+    });
+
+    document.getElementById('btn-prev-turn')?.addEventListener('click', () => {
+      if (state.strictListeningMode) return;
+      const nextIdx = Math.max(0, (state.currentLineIdx || 0) - 1);
+      stopListeningAudio();
+      toggleListeningAudio(task, nextIdx);
+    });
+
+    document.getElementById('btn-next-turn')?.addEventListener('click', () => {
+      if (state.strictListeningMode) return;
+      const maxIdx = Math.max(0, (task.script || []).length - 1);
+      const nextIdx = Math.min(maxIdx, (state.currentLineIdx || 0) + 1);
+      stopListeningAudio();
+      toggleListeningAudio(task, nextIdx);
+    });
+
+    document.getElementById('listening-accent-select')?.addEventListener('change', (e) => {
+      state.accentMode = e.target.value || 'auto';
+      if (state.isPlayingAudio) {
+        const resumeIdx = state.currentLineIdx || 0;
+        stopListeningAudio();
+        toggleListeningAudio(task, resumeIdx);
+      }
     });
 
     document.getElementById('listening-speed-select')?.addEventListener('change', (e) => {
       state.playbackRate = parseFloat(e.target.value) || 1.0;
+      const aud = document.getElementById('gemini-studio-audio');
+      if (aud) aud.playbackRate = state.playbackRate;
     });
 
     document.getElementById('listening-scratchpad')?.addEventListener('input', () => {
@@ -453,34 +580,87 @@ function renderLeftStimulus(task) {
     });
 
     document.getElementById('btn-toggle-transcript')?.addEventListener('click', () => {
+      if (state.strictListeningMode) return;
       const box = document.getElementById('listening-transcript-box');
       if (box) box.hidden = !box.hidden;
     });
+
+    container.querySelectorAll('.transcript-line').forEach((lineEl) => {
+      lineEl.addEventListener('click', () => {
+        if (state.strictListeningMode) return;
+        const idx = Number(lineEl.getAttribute('data-line-idx')) || 0;
+        stopListeningAudio();
+        toggleListeningAudio(task, idx);
+      });
+    });
+
     return;
   }
 
   if (task.section === 'speaking') {
-    const part1Html = (task.part1 || []).map((q) => `<li>${escapeHtml(q)}</li>`).join('');
+    const blindSteps = buildSpeakingBlindSteps(task);
+    const activeStep = blindSteps[Math.min(state.blindStepIdx, blindSteps.length - 1)] || blindSteps[0];
+
+    const part1Html = state.speakingBlindMode
+      ? `<p style="font-size:0.86rem;color:var(--text-muted);font-style:italic;padding:0.4rem 0;">&#128274; Part 1 written questions are hidden in Real Exam Blind Mode. Use the Turn-by-Turn Examiner Audio Bar above to hear each question aloud!</p>`
+      : `<ol style="padding-left:1.25rem;font-size:0.93rem;">${(task.part1 || []).map((q) => `<li>${escapeHtml(q)}</li>`).join('')}</ol>`;
+
     const bulletsHtml = (task.part2?.bullets || []).map((b) => `<li>${escapeHtml(b)}</li>`).join('');
-    const part3Html = (task.part3 || []).map((q) => `<li>${escapeHtml(q)}</li>`).join('');
+
+    const part3Html = state.speakingBlindMode
+      ? `<p style="font-size:0.86rem;color:var(--text-muted);font-style:italic;padding:0.4rem 0;">&#128274; Part 3 written questions are hidden in Real Exam Blind Mode. Use the Turn-by-Turn Examiner Audio Bar above to hear each question aloud!</p>`
+      : `<ol style="padding-left:1.25rem;font-size:0.93rem;">${(task.part3 || []).map((q) => `<li>${escapeHtml(q)}</li>`).join('')}</ol>`;
+
+    const blindControllerHtml = state.speakingBlindMode
+      ? `
+      <div style="background:var(--accent-soft);border:1.5px solid var(--accent-primary);border-radius:var(--radius-sm);padding:0.85rem 1rem;margin-bottom:1rem;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.5rem;">
+          <span style="font-family:var(--font-mono);font-size:0.76rem;font-weight:700;color:var(--accent-primary);text-transform:uppercase;">
+            &#127908; Live Examiner Turn ${state.blindStepIdx + 1} of ${blindSteps.length}: ${escapeHtml(activeStep.label)}
+          </span>
+          <span style="font-size:0.75rem;color:var(--text-secondary);">
+            ${activeStep.isCueCard ? 'Part 2 Cue Card is visible below (1-Min Prep)' : 'Audio-Only Prompt (Hidden like Real IELTS)'}
+          </span>
+        </div>
+        <div style="display:flex;align-items:center;gap:0.45rem;flex-wrap:wrap;">
+          <button id="btn-blind-prev" class="btn-secondary" type="button" style="padding:0.32rem 0.65rem;font-size:0.78rem;" ${state.blindStepIdx <= 0 ? 'disabled' : ''}>
+            &#9664; Prev Turn
+          </button>
+          <button id="btn-blind-speak" class="btn-primary" type="button" style="padding:0.35rem 0.9rem;font-size:0.8rem;">
+            &#128266; Examiner: Ask This Question Aloud
+          </button>
+          <button id="btn-blind-next" class="btn-secondary" type="button" style="padding:0.32rem 0.65rem;font-size:0.78rem;" ${state.blindStepIdx >= blindSteps.length - 1 ? 'disabled' : ''}>
+            Next Question &rarr;
+          </button>
+        </div>
+      </div>`
+      : '';
 
     container.innerHTML = `
-      <h2 class="stimulus-title">${escapeHtml(task.title)}</h2>
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.5rem;">
+        <h2 class="stimulus-title" style="margin-bottom:0;">${escapeHtml(task.title)}</h2>
+        <label style="display:inline-flex;align-items:center;gap:0.4rem;background:var(--bg-elevated);border:1px solid var(--border-strong);padding:0.3rem 0.7rem;border-radius:99px;font-size:0.76rem;font-weight:700;color:var(--accent-primary);cursor:pointer;">
+          <input type="checkbox" id="chk-speaking-blind" ${state.speakingBlindMode ? 'checked' : ''} />
+          &#127917; Real Exam Blind Mode (Turn-by-Turn Audio)
+        </label>
+      </div>
       <div class="stimulus-instructions">${escapeHtml(task.instructions)}</div>
+
+      ${blindControllerHtml}
 
       <div class="speaking-part-block">
         <div class="speaking-part-header">
           <span class="speaking-part-title">Part 1 &mdash; Introduction &amp; Interview (3–4 mins)</span>
           <button class="btn-secondary btn-speak-prompt" data-part="part1" type="button" style="padding:0.22rem 0.6rem;font-size:0.75rem;">
-            &#128266; Hear Examiner
+            &#128266; Hear Part 1
           </button>
         </div>
-        <ol style="padding-left:1.25rem;font-size:0.93rem;">${part1Html}</ol>
+        ${part1Html}
       </div>
 
       <div class="speaking-part-block">
         <div class="speaking-part-header">
-          <span class="speaking-part-title">Part 2 &mdash; Individual Long Turn Cue Card (3–4 mins)</span>
+          <span class="speaking-part-title">Part 2 &mdash; Individual Long Turn Cue Card (Always Visible)</span>
           <div style="display:flex;gap:0.4rem;">
             <button id="btn-prep-timer" class="btn-secondary" type="button" style="padding:0.22rem 0.6rem;font-size:0.75rem;">
               &#9201; 1-Min Prep (<span id="prep-timer-readout">01:00</span>)
@@ -501,12 +681,45 @@ function renderLeftStimulus(task) {
         <div class="speaking-part-header">
           <span class="speaking-part-title">Part 3 &mdash; Two-Way Abstract Discussion (4–5 mins)</span>
           <button class="btn-secondary btn-speak-prompt" data-part="part3" type="button" style="padding:0.22rem 0.6rem;font-size:0.75rem;">
-            &#128266; Hear Examiner
+            &#128266; Hear Part 3
           </button>
         </div>
-        <ol style="padding-left:1.25rem;font-size:0.93rem;">${part3Html}</ol>
+        ${part3Html}
       </div>
     `;
+
+    document.getElementById('chk-speaking-blind')?.addEventListener('change', (e) => {
+      state.speakingBlindMode = Boolean(e.target.checked);
+      state.blindStepIdx = 0;
+      renderLeftStimulus(task);
+      if (state.speakingBlindMode) {
+        const steps = buildSpeakingBlindSteps(task);
+        if (steps[0]) speakSingleExaminerText(steps[0].speechText);
+      }
+    });
+
+    document.getElementById('btn-blind-speak')?.addEventListener('click', () => {
+      startTimerIfNotRunning();
+      if (activeStep) speakSingleExaminerText(activeStep.speechText);
+    });
+
+    document.getElementById('btn-blind-prev')?.addEventListener('click', () => {
+      if (state.blindStepIdx > 0) {
+        state.blindStepIdx -= 1;
+        renderLeftStimulus(task);
+        const steps = buildSpeakingBlindSteps(task);
+        if (steps[state.blindStepIdx]) speakSingleExaminerText(steps[state.blindStepIdx].speechText);
+      }
+    });
+
+    document.getElementById('btn-blind-next')?.addEventListener('click', () => {
+      if (state.blindStepIdx < blindSteps.length - 1) {
+        state.blindStepIdx += 1;
+        renderLeftStimulus(task);
+        const steps = buildSpeakingBlindSteps(task);
+        if (steps[state.blindStepIdx]) speakSingleExaminerText(steps[state.blindStepIdx].speechText);
+      }
+    });
 
     container.querySelectorAll('.btn-speak-prompt').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -517,6 +730,32 @@ function renderLeftStimulus(task) {
 
     document.getElementById('btn-prep-timer')?.addEventListener('click', togglePart2PrepTimer);
   }
+}
+
+function buildSpeakingBlindSteps(task) {
+  const steps = [];
+  (task.part1 || []).forEach((q, idx) => {
+    steps.push({
+      label: `Part 1 — Question ${idx + 1} of ${(task.part1 || []).length}`,
+      speechText: `Part 1, Question ${idx + 1}. ${q}`,
+      isCueCard: false
+    });
+  });
+  if (task.part2) {
+    steps.push({
+      label: 'Part 2 — Individual Long Turn Cue Card',
+      speechText: `Now we move to Part 2. Please read the Cue Card on your screen. You have one minute to prepare notes, and then you should speak for one to two minutes. ${task.part2.topic || ''}`,
+      isCueCard: true
+    });
+  }
+  (task.part3 || []).forEach((q, idx) => {
+    steps.push({
+      label: `Part 3 — Discussion Question ${idx + 1} of ${(task.part3 || []).length}`,
+      speechText: `Part 3, Question ${idx + 1}. ${q}`,
+      isCueCard: false
+    });
+  });
+  return steps;
 }
 
 function renderRightResponse(task) {
@@ -535,10 +774,34 @@ function renderRightResponse(task) {
         html += `<div class="task-group-header">${escapeHtml(q.group)}</div>`;
       }
 
-      const currentVal = draftMap[q.id] || '';
+      const currentVal = String(draftMap[q.id] || '');
       let controlHtml = '';
 
-      if (q.type === 'tfng' || q.type === 'mcq') {
+      if (q.type === 'mcq_multi') {
+        const maxSel = q.maxSelect || 2;
+        const selectedTokens = currentVal
+          .split(',')
+          .map((s) => s.trim().toUpperCase())
+          .filter(Boolean);
+        const opts = q.options || [];
+        controlHtml = `
+          <div style="font-size:0.75rem;font-weight:700;color:var(--accent-primary);margin-bottom:0.35rem;">
+            Select ${maxSel} options (Selected: <span id="multi-count-${escapeHtmlAttr(q.id)}">${selectedTokens.length}</span>/${maxSel})
+          </div>
+          <div class="options-grid multi-options-grid" data-qid="${escapeHtmlAttr(q.id)}" data-max="${maxSel}" style="flex-direction:column;align-items:stretch;">
+            ${opts
+              .map((opt) => {
+                const letterMatch = String(opt).trim().match(/^([A-G])\b/i);
+                const letterCode = letterMatch ? letterMatch[1].toUpperCase() : opt;
+                const isSel = selectedTokens.includes(letterCode.toUpperCase()) || selectedTokens.includes(opt.toUpperCase());
+                return `
+                  <button type="button" class="option-pill multi-pill ${isSel ? 'selected' : ''}" data-qid="${escapeHtmlAttr(q.id)}" data-val="${escapeHtmlAttr(letterCode)}" style="text-align:left;">
+                    ${escapeHtml(opt)}
+                  </button>`;
+              })
+              .join('')}
+          </div>`;
+      } else if (q.type === 'tfng' || q.type === 'mcq') {
         const opts = q.options || ['TRUE', 'FALSE', 'NOT GIVEN'];
         controlHtml = `<div class="options-grid" data-qid="${escapeHtmlAttr(q.id)}">
           ${opts
@@ -581,14 +844,39 @@ function renderRightResponse(task) {
 
     container.innerHTML = html;
 
-    // Attach option pill listeners
-    container.querySelectorAll('.option-pill').forEach((btn) => {
+    // Attach single-select option pill listeners
+    container.querySelectorAll('.option-pill:not(.multi-pill)').forEach((btn) => {
       btn.addEventListener('click', () => {
         startTimerIfNotRunning();
         const qid = btn.getAttribute('data-qid');
         const group = container.querySelector(`.options-grid[data-qid="${qid}"]`);
         group?.querySelectorAll('.option-pill').forEach((b) => b.classList.remove('selected'));
         btn.classList.add('selected');
+
+        const map = getObjectiveAnswersFromDOM(task);
+        saveDraft(task.id, map);
+      });
+    });
+
+    // Attach multi-select ("Choose TWO") option pill listeners
+    container.querySelectorAll('.multi-pill').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        startTimerIfNotRunning();
+        const qid = btn.getAttribute('data-qid');
+        const group = container.querySelector(`.multi-options-grid[data-qid="${qid}"]`);
+        const maxSel = Number(group?.getAttribute('data-max')) || 2;
+        if (btn.classList.contains('selected')) {
+          btn.classList.remove('selected');
+        } else {
+          const currentSelected = group?.querySelectorAll('.multi-pill.selected') || [];
+          if (currentSelected.length >= maxSel) {
+            currentSelected[0].classList.remove('selected');
+          }
+          btn.classList.add('selected');
+        }
+        const newCount = (group?.querySelectorAll('.multi-pill.selected') || []).length;
+        const countEl = document.getElementById(`multi-count-${qid}`);
+        if (countEl) countEl.textContent = String(newCount);
 
         const map = getObjectiveAnswersFromDOM(task);
         saveDraft(task.id, map);
@@ -729,7 +1017,14 @@ function getObjectiveAnswersFromDOM(task) {
   if (!container) return map;
 
   (task.questions || []).forEach((q) => {
-    if (q.type === 'tfng' || q.type === 'mcq') {
+    if (q.type === 'mcq_multi') {
+      const selectedBtns = container.querySelectorAll(`.multi-options-grid[data-qid="${q.id}"] .multi-pill.selected`);
+      const vals = Array.from(selectedBtns)
+        .map((b) => b.getAttribute('data-val'))
+        .filter(Boolean)
+        .sort();
+      if (vals.length > 0) map[q.id] = vals.join(', ');
+    } else if (q.type === 'tfng' || q.type === 'mcq') {
       const sel = container.querySelector(`.options-grid[data-qid="${q.id}"] .option-pill.selected`);
       if (sel) map[q.id] = sel.getAttribute('data-val');
     } else {
@@ -785,20 +1080,98 @@ function highlightSelectedPassageText() {
 }
 
 // ==========================================================================
-// LISTENING MULTI-VOICE WEB SPEECH SYNTHESIS (WITH CHROME KEEP-ALIVE)
+// LISTENING DUAL AUDIO ENGINE: GEMINI NEURAL STUDIO TTS + ENHANCED VOICES
 // ==========================================================================
 
-function getDistinctSpeakerVoices() {
+function mountStudioAudioUrl(wavUrl) {
+  const wrap = document.getElementById('studio-audio-wrap');
+  const aud = document.getElementById('gemini-studio-audio');
+  const btn = document.getElementById('btn-generate-studio-audio');
+  if (!wrap || !aud) return;
+  wrap.hidden = false;
+  aud.src = wavUrl;
+  aud.playbackRate = state.playbackRate || 1.0;
+  if (btn) {
+    btn.innerHTML = '&#10003; Studio Neural Audio Active (Cached)';
+  }
+  aud.onplay = () => {
+    startTimerIfNotRunning();
+    stopListeningAudio();
+  };
+  aud.onended = () => {
+    state.listeningPlayCount += 1;
+    if (state.strictListeningMode && state.listeningPlayCount >= 1) {
+      aud.controls = false;
+      const st = document.getElementById('studio-audio-status');
+      if (st) st.textContent = 'Strict Exam Mode: 1st play completed. Submit answers to unlock replay & transcript.';
+    }
+  };
+}
+
+async function handleGenerateStudioAudio(task) {
+  if (!state.apiKey) {
+    document.getElementById('modal-settings').hidden = false;
+    return;
+  }
+  const btn = document.getElementById('btn-generate-studio-audio');
+  if (!btn) return;
+  const origHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '&#9203; Synthesizing Multi-Speaker Neural Audio...';
+
+  try {
+    const wavUrl = await synthesizeListeningAudioWithGemini(state.apiKey, task);
+    mountStudioAudioUrl(wavUrl);
+    const aud = document.getElementById('gemini-studio-audio');
+    if (aud) aud.play().catch(() => {});
+  } catch (err) {
+    alert(
+      `Studio Neural TTS notice: ${err.message}\n\nUsing the enhanced Multi-Accent Browser Voice Player instead!`
+    );
+    btn.innerHTML = origHtml;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/**
+ * Ranks available browser voices so Natural / Neural / Online / Google / Microsoft voices
+ * across British (en-GB), Australian (en-AU), and North American (en-US) accents come first.
+ */
+function getRankedSpeakerVoices(accentFilter = 'auto') {
   if (!('speechSynthesis' in window)) return [];
   const allVoices = window.speechSynthesis.getVoices() || [];
-  const enVoices = allVoices.filter((v) => /^en(-|_)/i.test(v.lang));
-  return enVoices.length > 0 ? enVoices : allVoices;
+  let enVoices = allVoices.filter((v) => /^en(-|_)/i.test(v.lang));
+  if (accentFilter !== 'auto') {
+    const filtered = enVoices.filter((v) =>
+      v.lang.toLowerCase().startsWith(accentFilter.toLowerCase())
+    );
+    if (filtered.length > 0) enVoices = filtered;
+  }
+
+  const scoreVoice = (v) => {
+    let score = 0;
+    const name = (v.name || '').toLowerCase();
+    const lang = (v.lang || '').toLowerCase();
+    if (name.includes('natural') || name.includes('neural') || name.includes('online')) score += 50;
+    if (name.includes('google') || name.includes('premium') || name.includes('enhanced')) score += 30;
+    if (name.includes('sonia') || name.includes('ryan') || name.includes('libby') || name.includes('natasha') || name.includes('william')) score += 25;
+    if (lang.startsWith('en-gb') || lang.startsWith('en-au')) score += 15;
+    if (!v.localService) score += 10;
+    return score;
+  };
+
+  return (enVoices.length > 0 ? enVoices : allVoices).slice().sort((a, b) => scoreVoice(b) - scoreVoice(a));
 }
 
 function stopListeningAudio() {
   if (state.ttsKeepAliveInterval) {
     clearInterval(state.ttsKeepAliveInterval);
     state.ttsKeepAliveInterval = null;
+  }
+  if (state.ttsPauseTimeout) {
+    clearTimeout(state.ttsPauseTimeout);
+    state.ttsPauseTimeout = null;
   }
   if ('speechSynthesis' in window) {
     window.speechSynthesis.cancel();
@@ -812,7 +1185,7 @@ function stopListeningAudio() {
   });
 }
 
-function toggleListeningAudio(task) {
+function toggleListeningAudio(task, startIdx = 0) {
   if (!('speechSynthesis' in window)) {
     const box = document.getElementById('listening-transcript-box');
     if (box) box.hidden = false;
@@ -827,6 +1200,13 @@ function toggleListeningAudio(task) {
     return;
   }
 
+  if (state.strictListeningMode && state.listeningPlayCount >= 1) {
+    alert(
+      'Strict Exam Mode is active: the recording has already been played once. Submit your answers to unlock unlimited replays and the transcript!'
+    );
+    return;
+  }
+
   const lines = task.script || [];
   if (!lines.length) return;
 
@@ -834,59 +1214,69 @@ function toggleListeningAudio(task) {
   const icon = document.getElementById('listening-play-icon');
   if (icon) icon.innerHTML = '&#9632;';
 
-  // Assign each unique speaker name a consistent voice from available English voices
-  const voices = getDistinctSpeakerVoices();
+  const voices = getRankedSpeakerVoices(state.accentMode);
   const speakerVoiceMap = new Map();
   let speakerCounter = 0;
 
-  // Chrome WebSpeech keep-alive timer (prevents 15s pause bug on long utterances)
   state.ttsKeepAliveInterval = setInterval(() => {
     if (state.isPlayingAudio && window.speechSynthesis.speaking) {
       window.speechSynthesis.resume();
     }
   }, 5000);
 
-  let idx = 0;
+  let idx = Math.max(0, Math.min(startIdx, lines.length - 1));
   const speakNextLine = () => {
     if (!state.isPlayingAudio || idx >= lines.length) {
       const completedAll = idx >= lines.length;
       stopListeningAudio();
       if (completedAll) {
+        state.listeningPlayCount += 1;
+        state.currentLineIdx = 0;
         const fill = document.getElementById('audio-progress-fill');
         if (fill) fill.style.width = '100%';
         const lbl = document.getElementById('audio-speaker-label');
-        if (lbl) lbl.textContent = 'Audio complete — click Play to listen again';
+        if (lbl) {
+          lbl.textContent = state.strictListeningMode
+            ? 'Strict Exam Mode: 1st play complete (Submit to unlock replay)'
+            : 'Audio complete — click Play to listen again';
+        }
       }
       return;
     }
 
+    state.currentLineIdx = idx;
     const line = lines[idx];
     const lbl = document.getElementById('audio-speaker-label');
     const fill = document.getElementById('audio-progress-fill');
     if (lbl) lbl.textContent = `Speaking now: ${line.speaker} (Turn ${idx + 1} of ${lines.length})`;
     if (fill) fill.style.width = `${Math.round(((idx + 0.5) / lines.length) * 100)}%`;
 
-    // Highlight active transcript line if visible
     document.querySelectorAll('.transcript-line').forEach((el) => {
       el.classList.toggle('is-speaking', Number(el.getAttribute('data-line-idx')) === idx);
     });
 
     const utter = new SpeechSynthesisUtterance(line.text);
-    utter.lang = 'en-GB';
+    utter.lang = state.accentMode === 'auto' ? 'en-GB' : state.accentMode;
     if (voices.length > 0) {
       if (!speakerVoiceMap.has(line.speaker)) {
         speakerVoiceMap.set(line.speaker, voices[speakerCounter % voices.length]);
         speakerCounter += 1;
       }
       const chosenVoice = speakerVoiceMap.get(line.speaker);
-      if (chosenVoice) utter.voice = chosenVoice;
+      if (chosenVoice) {
+        utter.voice = chosenVoice;
+        utter.lang = chosenVoice.lang || utter.lang;
+      }
     }
     utter.pitch = line.pitch || 1.0;
-    utter.rate = (line.rate || 1.0) * state.playbackRate;
+    utter.rate = (line.rate || 0.97) * state.playbackRate;
 
     utter.onend = () => {
       idx += 1;
-      speakNextLine();
+      // Natural 380ms conversational pause between speaker turns
+      state.ttsPauseTimeout = setTimeout(() => {
+        if (state.isPlayingAudio) speakNextLine();
+      }, 380);
     };
     utter.onerror = () => {
       stopListeningAudio();
@@ -899,9 +1289,18 @@ function toggleListeningAudio(task) {
   speakNextLine();
 }
 
-function speakExaminerPrompts(task, part) {
+function speakSingleExaminerText(textToRead) {
   if (!('speechSynthesis' in window)) return;
   stopListeningAudio();
+  const voices = getRankedSpeakerVoices('en-GB');
+  const utter = new SpeechSynthesisUtterance(textToRead);
+  utter.lang = 'en-GB';
+  if (voices[0]) utter.voice = voices[0];
+  utter.rate = 0.95;
+  window.speechSynthesis.speak(utter);
+}
+
+function speakExaminerPrompts(task, part) {
   let textToRead = '';
   if (part === 'part1') {
     textToRead = 'Part 1. ' + (task.part1 || []).join(' Next question: ');
@@ -910,10 +1309,7 @@ function speakExaminerPrompts(task, part) {
   } else {
     textToRead = 'Part 3 Discussion. ' + (task.part3 || []).join(' Next question: ');
   }
-  const utter = new SpeechSynthesisUtterance(textToRead);
-  utter.lang = 'en-GB';
-  utter.rate = 0.96;
-  window.speechSynthesis.speak(utter);
+  speakSingleExaminerText(textToRead);
 }
 
 function togglePart2PrepTimer() {
@@ -1083,9 +1479,14 @@ function applyObjectiveQuestionHighlights(task, evalResult) {
     }
   });
 
-  // Unlock listening transcript automatically
+  // Unlock listening transcript and replay automatically after submission
+  state.listeningPlayCount = 0;
   const transBox = document.getElementById('listening-transcript-box');
   if (transBox) transBox.hidden = false;
+  const transBtn = document.getElementById('btn-toggle-transcript');
+  if (transBtn) transBtn.disabled = false;
+  const studioAud = document.getElementById('gemini-studio-audio');
+  if (studioAud) studioAud.controls = true;
 }
 
 async function handleTaskSubmission() {
