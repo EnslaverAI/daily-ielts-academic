@@ -772,6 +772,14 @@ button {
 
 .transcript-line {
   margin-bottom: 0.6rem;
+  padding: 0.25rem 0.45rem;
+  border-radius: 4px;
+  transition: background var(--transition-fast);
+}
+
+.transcript-line.is-speaking {
+  background: var(--accent-primary-soft);
+  border-left: 3px solid var(--accent-primary);
 }
 
 .transcript-speaker {

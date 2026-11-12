@@ -6,7 +6,8 @@ import { SEED_TASKS, renderTask1ChartSVG } from './tasks-bank.js';
 import {
   generateFreshTaskWithGemini,
   evaluateSubmissionWithGemini,
-  evaluateSubmissionLocally
+  evaluateSubmissionLocally,
+  verifyGeminiApiKey
 } from './gemini-service.js';
 
 const STORAGE_KEYS = {
@@ -42,9 +43,8 @@ const state = {
 
   // Listening TTS state
   isPlayingAudio: false,
-  currentScriptLineIndex: 0,
+  ttsKeepAliveInterval: null,
   playbackRate: 1.0,
-  showTranscriptDuringTest: false,
 
   // Speaking Microphone Recorder state
   isRecording: false,
@@ -61,16 +61,28 @@ const state = {
 function loadPersistedState() {
   try {
     const rawHist = localStorage.getItem(STORAGE_KEYS.HISTORY);
-    if (rawHist) state.history = JSON.parse(rawHist);
+    if (rawHist) {
+      const parsed = JSON.parse(rawHist);
+      if (Array.isArray(parsed)) state.history = parsed;
+    }
 
     const rawSeen = localStorage.getItem(STORAGE_KEYS.SEEN_IDS);
-    if (rawSeen) state.seenIds = new Set(JSON.parse(rawSeen));
+    if (rawSeen) {
+      const parsed = JSON.parse(rawSeen);
+      if (Array.isArray(parsed)) state.seenIds = new Set(parsed);
+    }
 
     const rawCustom = localStorage.getItem(STORAGE_KEYS.CUSTOM_TASKS);
-    if (rawCustom) state.customTasks = JSON.parse(rawCustom);
+    if (rawCustom) {
+      const parsed = JSON.parse(rawCustom);
+      if (Array.isArray(parsed)) state.customTasks = parsed;
+    }
 
     const rawDrafts = localStorage.getItem(STORAGE_KEYS.DRAFTS);
-    if (rawDrafts) state.drafts = JSON.parse(rawDrafts);
+    if (rawDrafts) {
+      const parsed = JSON.parse(rawDrafts);
+      if (parsed && typeof parsed === 'object') state.drafts = parsed;
+    }
 
     const savedKey = localStorage.getItem(STORAGE_KEYS.API_KEY);
     if (savedKey) state.apiKey = savedKey.trim();
@@ -116,7 +128,6 @@ function getAllTasks() {
 function computeRecommendedSkillForToday() {
   const skills = ['reading', 'writing', 'listening', 'speaking'];
   const dayIndex = Math.floor(Date.now() / (1000 * 60 * 60 * 24));
-  // If user already practiced a skill today, suggest the next one in rotation
   const todayISO = new Date().toISOString().slice(0, 10);
   const doneToday = new Set(
     state.history
@@ -130,12 +141,16 @@ function computeRecommendedSkillForToday() {
   return skills[dayIndex % skills.length];
 }
 
-function pickNextUnseenTask(section, subMode = 'any', excludeCurrentId = null) {
-  const all = getAllTasks().filter((t) => {
+function getMatchingSectionTasks(section, subMode = 'any') {
+  return getAllTasks().filter((t) => {
     if (t.section !== section) return false;
     if (section === 'writing' && subMode !== 'any' && t.subMode !== subMode) return false;
     return true;
   });
+}
+
+function pickNextUnseenTask(section, subMode = 'any', excludeCurrentId = null) {
+  const all = getMatchingSectionTasks(section, subMode);
 
   // Prefer tasks never completed/seen before
   const unseen = all.filter(
@@ -145,9 +160,15 @@ function pickNextUnseenTask(section, subMode = 'any', excludeCurrentId = null) {
     return unseen[0];
   }
 
-  // Fallback if all seed tasks in this category were completed: pick one not currently active
-  const fallback = all.filter((t) => t.id !== excludeCurrentId);
-  return fallback[0] || all[0];
+  // Fallback if all seed tasks in this category were completed: cycle to next task
+  if (all.length === 0) return null;
+  if (excludeCurrentId) {
+    const currIdx = all.findIndex((t) => t.id === excludeCurrentId);
+    if (currIdx !== -1 && all.length > 1) {
+      return all[(currIdx + 1) % all.length];
+    }
+  }
+  return all[0];
 }
 
 // ==========================================================================
@@ -169,6 +190,8 @@ function updateTimerUI() {
   const overtimeBanner = document.getElementById('overtime-banner');
   const overtimeInline = document.getElementById('overtime-inline');
 
+  if (!dock || !readout || !tag || !toggleIcon) return;
+
   toggleIcon.innerHTML = state.timerRunning ? '&#10074;&#10074;' : '&#9654;';
   dock.classList.toggle('is-running', state.timerRunning);
 
@@ -176,7 +199,7 @@ function updateTimerUI() {
 
   if (remaining >= 0) {
     readout.textContent = formatMMSS(remaining);
-    overtimeBanner.hidden = true;
+    if (overtimeBanner) overtimeBanner.hidden = true;
     dock.classList.remove('is-overtime');
 
     if (remaining <= 300 && state.timerRunning) {
@@ -194,8 +217,8 @@ function updateTimerUI() {
     tag.textContent = 'Overtime';
     dock.classList.remove('is-warning');
     dock.classList.add('is-overtime');
-    overtimeBanner.hidden = false;
-    overtimeInline.textContent = overFormatted;
+    if (overtimeBanner) overtimeBanner.hidden = false;
+    if (overtimeInline) overtimeInline.textContent = overFormatted;
   }
 }
 
@@ -230,22 +253,46 @@ function resetTimer() {
   updateTimerUI();
 }
 
+function clearPart2PrepTimer() {
+  if (state.prepInterval) {
+    clearInterval(state.prepInterval);
+    state.prepInterval = null;
+  }
+  state.prepSeconds = 60;
+  const readout = document.getElementById('prep-timer-readout');
+  if (readout) readout.textContent = '01:00';
+}
+
 // ==========================================================================
 // RENDER WORKSPACE (LEFT STIMULUS + RIGHT CANDIDATE RESPONSE)
 // ==========================================================================
 
+function cleanupRecordedAudioUrl() {
+  if (state.recordedAudioObj && state.recordedAudioObj.url) {
+    try {
+      URL.revokeObjectURL(state.recordedAudioObj.url);
+    } catch (e) {
+      // ignore
+    }
+  }
+  state.recordedAudioObj = null;
+}
+
 function loadTaskIntoWorkspace(task) {
   stopListeningAudio();
   stopSpeakingRecording();
+  clearPart2PrepTimer();
+  cleanupRecordedAudioUrl();
+
   state.currentTask = task;
-  state.recordedAudioObj = null;
-  state.showTranscriptDuringTest = false;
   resetTimer();
 
   // Hide previous evaluation report
   const evalSec = document.getElementById('evaluation-section');
-  evalSec.hidden = true;
-  evalSec.innerHTML = '';
+  if (evalSec) {
+    evalSec.hidden = true;
+    evalSec.innerHTML = '';
+  }
 
   // Update header tags
   document.getElementById('stimulus-badge').textContent = task.section.toUpperCase();
@@ -255,27 +302,29 @@ function loadTaskIntoWorkspace(task) {
     ? 'Completed Earlier'
     : 'In Progress • Auto-Saved';
 
+  updateHeaderBadges();
   renderLeftStimulus(task);
   renderRightResponse(task);
 }
 
 function renderLeftStimulus(task) {
   const container = document.getElementById('stimulus-body');
+  if (!container) return;
 
   if (task.section === 'reading') {
     const paragraphsHtml = (task.paragraphs || [])
       .map(
         (p) => `
         <div class="reading-paragraph">
-          <span class="para-label">${p.label}</span>
-          <p class="para-content">${p.text}</p>
+          <span class="para-label">${escapeHtml(p.label)}</span>
+          <p class="para-content">${escapeHtml(p.text)}</p>
         </div>`
       )
       .join('');
 
     container.innerHTML = `
-      <h2 class="stimulus-title">${task.title}</h2>
-      <div class="stimulus-instructions">${task.instructions}</div>
+      <h2 class="stimulus-title">${escapeHtml(task.title)}</h2>
+      <div class="stimulus-instructions">${escapeHtml(task.instructions)}</div>
       <div class="reading-toolbar">
         <span>Academic Passage (${(task.paragraphs || []).length} Paragraphs)</span>
         <div style="display:flex;gap:0.4rem;">
@@ -307,10 +356,12 @@ function renderLeftStimulus(task) {
         </figure>`
       : '';
 
+    const safePrompt = escapeHtml(task.prompt || '').replace(/\n/g, '<br/>');
+
     container.innerHTML = `
-      <h2 class="stimulus-title">${task.title}</h2>
-      <div class="stimulus-instructions">${task.instructions}</div>
-      <div class="writing-prompt-box">${task.prompt.replace(/\n/g, '<br/>')}</div>
+      <h2 class="stimulus-title">${escapeHtml(task.title)}</h2>
+      <div class="stimulus-instructions">${escapeHtml(task.instructions)}</div>
+      <div class="writing-prompt-box">${safePrompt}</div>
       ${chartSvgHtml}
       <div style="background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:0.9rem 1.1rem;font-size:0.83rem;color:var(--text-secondary);">
         <strong>Official IELTS Academic Criteria Assessed:</strong>
@@ -330,19 +381,23 @@ function renderLeftStimulus(task) {
   }
 
   if (task.section === 'listening') {
+    const savedDraft = state.drafts[task.id];
+    const scratchpadText =
+      savedDraft && typeof savedDraft === 'object' ? savedDraft.__scratchpad || '' : '';
+
     const transcriptHtml = (task.script || [])
       .map(
         (line, idx) => `
         <div class="transcript-line" data-line-idx="${idx}">
-          <span class="transcript-speaker">${line.speaker}:</span>
-          <span>${line.text}</span>
+          <span class="transcript-speaker">${escapeHtml(line.speaker)}:</span>
+          <span>${escapeHtml(line.text)}</span>
         </div>`
       )
       .join('');
 
     container.innerHTML = `
-      <h2 class="stimulus-title">${task.title}</h2>
-      <div class="stimulus-instructions">${task.instructions}</div>
+      <h2 class="stimulus-title">${escapeHtml(task.title)}</h2>
+      <div class="stimulus-instructions">${escapeHtml(task.instructions)}</div>
 
       <div class="listening-player-card">
         <div class="audio-controls-row">
@@ -358,16 +413,16 @@ function renderLeftStimulus(task) {
             </div>
           </div>
           <select id="listening-speed-select" class="submode-select" aria-label="Audio Speed">
-            <option value="0.9">0.9x Calm</option>
-            <option value="1" selected>1.0x Exam Pace</option>
-            <option value="1.1">1.1x Brisk</option>
+            <option value="0.9" ${state.playbackRate === 0.9 ? 'selected' : ''}>0.9x Calm</option>
+            <option value="1" ${state.playbackRate === 1.0 ? 'selected' : ''}>1.0x Exam Pace</option>
+            <option value="1.1" ${state.playbackRate === 1.1 ? 'selected' : ''}>1.1x Brisk</option>
           </select>
         </div>
 
         <label for="listening-scratchpad" style="display:block;font-size:0.78rem;font-weight:600;color:var(--text-muted);margin-top:0.9rem;">
-          Listening Scratchpad (Jot down numbers, dates, and keywords while listening):
+          Listening Scratchpad (Auto-saved — jot down numbers, dates, and keywords while listening):
         </label>
-        <textarea id="listening-scratchpad" class="listening-scratchpad" placeholder="Type rough listening notes here..."></textarea>
+        <textarea id="listening-scratchpad" class="listening-scratchpad" placeholder="Type rough listening notes here...">${escapeHtml(scratchpadText)}</textarea>
 
         <div style="margin-top:0.75rem;display:flex;justify-content:space-between;align-items:center;">
           <span style="font-size:0.76rem;color:var(--text-muted);">Transcript unlocks automatically after submission.</span>
@@ -391,6 +446,12 @@ function renderLeftStimulus(task) {
       state.playbackRate = parseFloat(e.target.value) || 1.0;
     });
 
+    document.getElementById('listening-scratchpad')?.addEventListener('input', () => {
+      startTimerIfNotRunning();
+      const map = getObjectiveAnswersFromDOM(task);
+      saveDraft(task.id, map);
+    });
+
     document.getElementById('btn-toggle-transcript')?.addEventListener('click', () => {
       const box = document.getElementById('listening-transcript-box');
       if (box) box.hidden = !box.hidden;
@@ -399,13 +460,13 @@ function renderLeftStimulus(task) {
   }
 
   if (task.section === 'speaking') {
-    const part1Html = (task.part1 || []).map((q) => `<li>${q}</li>`).join('');
-    const bulletsHtml = (task.part2?.bullets || []).map((b) => `<li>${b}</li>`).join('');
-    const part3Html = (task.part3 || []).map((q) => `<li>${q}</li>`).join('');
+    const part1Html = (task.part1 || []).map((q) => `<li>${escapeHtml(q)}</li>`).join('');
+    const bulletsHtml = (task.part2?.bullets || []).map((b) => `<li>${escapeHtml(b)}</li>`).join('');
+    const part3Html = (task.part3 || []).map((q) => `<li>${escapeHtml(q)}</li>`).join('');
 
     container.innerHTML = `
-      <h2 class="stimulus-title">${task.title}</h2>
-      <div class="stimulus-instructions">${task.instructions}</div>
+      <h2 class="stimulus-title">${escapeHtml(task.title)}</h2>
+      <div class="stimulus-instructions">${escapeHtml(task.instructions)}</div>
 
       <div class="speaking-part-block">
         <div class="speaking-part-header">
@@ -430,7 +491,7 @@ function renderLeftStimulus(task) {
           </div>
         </div>
         <div class="cue-card-box">
-          <div class="cue-card-topic">${task.part2?.topic || ''}</div>
+          <div class="cue-card-topic">${escapeHtml(task.part2?.topic || '')}</div>
           <p style="font-size:0.8rem;font-weight:600;color:var(--text-muted);margin-bottom:0.3rem;">You should say:</p>
           <ul class="cue-card-bullets">${bulletsHtml}</ul>
         </div>
@@ -460,6 +521,7 @@ function renderLeftStimulus(task) {
 
 function renderRightResponse(task) {
   const container = document.getElementById('response-body');
+  if (!container) return;
   const savedDraft = state.drafts[task.id];
 
   if (task.section === 'reading' || task.section === 'listening') {
@@ -470,7 +532,7 @@ function renderRightResponse(task) {
     (task.questions || []).forEach((q, idx) => {
       if (q.group && q.group !== lastGroup) {
         lastGroup = q.group;
-        html += `<div class="task-group-header">${q.group}</div>`;
+        html += `<div class="task-group-header">${escapeHtml(q.group)}</div>`;
       }
 
       const currentVal = draftMap[q.id] || '';
@@ -478,30 +540,30 @@ function renderRightResponse(task) {
 
       if (q.type === 'tfng' || q.type === 'mcq') {
         const opts = q.options || ['TRUE', 'FALSE', 'NOT GIVEN'];
-        controlHtml = `<div class="options-grid" data-qid="${q.id}">
+        controlHtml = `<div class="options-grid" data-qid="${escapeHtmlAttr(q.id)}">
           ${opts
             .map(
               (opt) => `
-              <button type="button" class="option-pill ${currentVal === opt ? 'selected' : ''}" data-qid="${q.id}" data-val="${escapeHtmlAttr(opt)}">
-                ${opt}
+              <button type="button" class="option-pill ${currentVal === opt ? 'selected' : ''}" data-qid="${escapeHtmlAttr(q.id)}" data-val="${escapeHtmlAttr(opt)}">
+                ${escapeHtml(opt)}
               </button>`
             )
             .join('')}
         </div>`;
       } else {
         controlHtml = `
-          <input type="text" class="fill-input" data-qid="${q.id}" value="${escapeHtmlAttr(currentVal)}" placeholder="Type your answer..." autocomplete="off" />
+          <input type="text" class="fill-input" data-qid="${escapeHtmlAttr(q.id)}" value="${escapeHtmlAttr(currentVal)}" placeholder="Type your answer..." autocomplete="off" />
         `;
       }
 
       html += `
-        <div class="question-card" id="qcard-${q.id}">
+        <div class="question-card" id="qcard-${escapeHtmlAttr(q.id)}">
           <div class="question-prompt">
             <span class="q-num">Q${idx + 1}</span>
-            <span>${q.prompt}</span>
+            <span>${escapeHtml(q.prompt)}</span>
           </div>
           ${controlHtml}
-          <div class="question-explanation" id="qexp-${q.id}" hidden></div>
+          <div class="question-explanation" id="qexp-${escapeHtmlAttr(q.id)}" hidden></div>
         </div>
       `;
     });
@@ -509,7 +571,7 @@ function renderRightResponse(task) {
     html += `
       <div class="submit-bar">
         <span style="font-size:0.8rem;color:var(--text-muted);">
-          Timer is a reminder only &mdash; submit whenever you are ready.
+          Timer is a reminder only &mdash; submit whenever you are ready (Ctrl+Enter).
         </span>
         <button id="btn-submit-task" class="btn-primary" type="button">
           &#10003; Submit &amp; Get IELTS Band Score
@@ -524,7 +586,6 @@ function renderRightResponse(task) {
       btn.addEventListener('click', () => {
         startTimerIfNotRunning();
         const qid = btn.getAttribute('data-qid');
-        const val = btn.getAttribute('data-val');
         const group = container.querySelector(`.options-grid[data-qid="${qid}"]`);
         group?.querySelectorAll('.option-pill').forEach((b) => b.classList.remove('selected'));
         btn.classList.add('selected');
@@ -665,6 +726,8 @@ function renderRightResponse(task) {
 function getObjectiveAnswersFromDOM(task) {
   const container = document.getElementById('response-body');
   const map = {};
+  if (!container) return map;
+
   (task.questions || []).forEach((q) => {
     if (q.type === 'tfng' || q.type === 'mcq') {
       const sel = container.querySelector(`.options-grid[data-qid="${q.id}"] .option-pill.selected`);
@@ -674,11 +737,17 @@ function getObjectiveAnswersFromDOM(task) {
       if (inp) map[q.id] = inp.value.trim();
     }
   });
+
+  if (task.section === 'listening') {
+    const scratch = document.getElementById('listening-scratchpad');
+    if (scratch) map.__scratchpad = scratch.value;
+  }
+
   return map;
 }
 
 // ==========================================================================
-// READING HIGHLIGHTER
+// READING HIGHLIGHTER (SAFE FRAGMENT EXTRACTION — NO OVERLAP ERRORS)
 // ==========================================================================
 
 function highlightSelectedPassageText() {
@@ -689,39 +758,67 @@ function highlightSelectedPassageText() {
   if (!passageBox || !passageBox.contains(range.commonAncestorContainer)) return;
 
   try {
+    const fragment = range.extractContents();
+    // Unwrap any existing <mark class="user-highlight"> inside the extracted fragment to prevent nesting
+    fragment.querySelectorAll?.('mark.user-highlight').forEach((nested) => {
+      const p = nested.parentNode;
+      while (nested.firstChild) p.insertBefore(nested.firstChild, nested);
+      p.removeChild(nested);
+    });
+
     const mark = document.createElement('mark');
     mark.className = 'user-highlight';
     mark.title = 'Click to remove highlight';
-    mark.addEventListener('click', () => {
+    mark.addEventListener('click', (e) => {
+      e.stopPropagation();
       const parent = mark.parentNode;
+      if (!parent) return;
       while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
       parent.removeChild(mark);
     });
-    range.surroundContents(mark);
+    mark.appendChild(fragment);
+    range.insertNode(mark);
     sel.removeAllRanges();
   } catch (e) {
-    // Fallback if selection crosses paragraph boundaries
+    // Ignore if selection crosses block boundaries
   }
 }
 
 // ==========================================================================
-// LISTENING MULTI-VOICE WEB SPEECH SYNTHESIS
+// LISTENING MULTI-VOICE WEB SPEECH SYNTHESIS (WITH CHROME KEEP-ALIVE)
 // ==========================================================================
 
+function getDistinctSpeakerVoices() {
+  if (!('speechSynthesis' in window)) return [];
+  const allVoices = window.speechSynthesis.getVoices() || [];
+  const enVoices = allVoices.filter((v) => /^en(-|_)/i.test(v.lang));
+  return enVoices.length > 0 ? enVoices : allVoices;
+}
+
 function stopListeningAudio() {
+  if (state.ttsKeepAliveInterval) {
+    clearInterval(state.ttsKeepAliveInterval);
+    state.ttsKeepAliveInterval = null;
+  }
   if ('speechSynthesis' in window) {
     window.speechSynthesis.cancel();
   }
   state.isPlayingAudio = false;
   const icon = document.getElementById('listening-play-icon');
   if (icon) icon.innerHTML = '&#9654;';
+
+  document.querySelectorAll('.transcript-line.is-speaking').forEach((el) => {
+    el.classList.remove('is-speaking');
+  });
 }
 
 function toggleListeningAudio(task) {
   if (!('speechSynthesis' in window)) {
     const box = document.getElementById('listening-transcript-box');
     if (box) box.hidden = false;
-    alert('Browser Speech Synthesis is unavailable on this device. The written transcript has been opened below so you can complete the questions.');
+    alert(
+      'Browser Speech Synthesis is unavailable on this device. The written transcript has been opened below so you can complete the questions.'
+    );
     return;
   }
 
@@ -737,14 +834,29 @@ function toggleListeningAudio(task) {
   const icon = document.getElementById('listening-play-icon');
   if (icon) icon.innerHTML = '&#9632;';
 
+  // Assign each unique speaker name a consistent voice from available English voices
+  const voices = getDistinctSpeakerVoices();
+  const speakerVoiceMap = new Map();
+  let speakerCounter = 0;
+
+  // Chrome WebSpeech keep-alive timer (prevents 15s pause bug on long utterances)
+  state.ttsKeepAliveInterval = setInterval(() => {
+    if (state.isPlayingAudio && window.speechSynthesis.speaking) {
+      window.speechSynthesis.resume();
+    }
+  }, 5000);
+
   let idx = 0;
   const speakNextLine = () => {
     if (!state.isPlayingAudio || idx >= lines.length) {
+      const completedAll = idx >= lines.length;
       stopListeningAudio();
-      const fill = document.getElementById('audio-progress-fill');
-      if (fill && idx >= lines.length) fill.style.width = '100%';
-      const lbl = document.getElementById('audio-speaker-label');
-      if (lbl && idx >= lines.length) lbl.textContent = 'Audio complete — click Play to listen again';
+      if (completedAll) {
+        const fill = document.getElementById('audio-progress-fill');
+        if (fill) fill.style.width = '100%';
+        const lbl = document.getElementById('audio-speaker-label');
+        if (lbl) lbl.textContent = 'Audio complete — click Play to listen again';
+      }
       return;
     }
 
@@ -754,8 +866,21 @@ function toggleListeningAudio(task) {
     if (lbl) lbl.textContent = `Speaking now: ${line.speaker} (Turn ${idx + 1} of ${lines.length})`;
     if (fill) fill.style.width = `${Math.round(((idx + 0.5) / lines.length) * 100)}%`;
 
+    // Highlight active transcript line if visible
+    document.querySelectorAll('.transcript-line').forEach((el) => {
+      el.classList.toggle('is-speaking', Number(el.getAttribute('data-line-idx')) === idx);
+    });
+
     const utter = new SpeechSynthesisUtterance(line.text);
     utter.lang = 'en-GB';
+    if (voices.length > 0) {
+      if (!speakerVoiceMap.has(line.speaker)) {
+        speakerVoiceMap.set(line.speaker, voices[speakerCounter % voices.length]);
+        speakerCounter += 1;
+      }
+      const chosenVoice = speakerVoiceMap.get(line.speaker);
+      if (chosenVoice) utter.voice = chosenVoice;
+    }
     utter.pitch = line.pitch || 1.0;
     utter.rate = (line.rate || 1.0) * state.playbackRate;
 
@@ -776,7 +901,7 @@ function toggleListeningAudio(task) {
 
 function speakExaminerPrompts(task, part) {
   if (!('speechSynthesis' in window)) return;
-  window.speechSynthesis.cancel();
+  stopListeningAudio();
   let textToRead = '';
   if (part === 'part1') {
     textToRead = 'Part 1. ' + (task.part1 || []).join(' Next question: ');
@@ -794,10 +919,7 @@ function speakExaminerPrompts(task, part) {
 function togglePart2PrepTimer() {
   const readout = document.getElementById('prep-timer-readout');
   if (state.prepInterval) {
-    clearInterval(state.prepInterval);
-    state.prepInterval = null;
-    state.prepSeconds = 60;
-    if (readout) readout.textContent = '01:00';
+    clearPart2PrepTimer();
     return;
   }
   state.prepSeconds = 60;
@@ -812,10 +934,20 @@ function togglePart2PrepTimer() {
 }
 
 // ==========================================================================
-// SPEAKING MICROPHONE RECORDER + LIVE SPEECH RECOGNITION
+// SPEAKING MICROPHONE RECORDER + CONTINUOUS SPEECH RECOGNITION
 // ==========================================================================
 
 function stopSpeakingRecording() {
+  state.isRecording = false;
+  if (state.speechRecognition) {
+    try {
+      state.speechRecognition.onend = null;
+      state.speechRecognition.stop();
+    } catch (e) {
+      // ignore
+    }
+    state.speechRecognition = null;
+  }
   if (state.mediaRecorder && state.mediaRecorder.state !== 'inactive') {
     try {
       state.mediaRecorder.stop();
@@ -823,14 +955,6 @@ function stopSpeakingRecording() {
       // ignore
     }
   }
-  if (state.speechRecognition) {
-    try {
-      state.speechRecognition.stop();
-    } catch (e) {
-      // ignore
-    }
-  }
-  state.isRecording = false;
   const btn = document.getElementById('btn-record-voice');
   const label = document.getElementById('record-btn-label');
   const bars = document.getElementById('waveform-bars');
@@ -847,8 +971,12 @@ async function toggleSpeakingRecording() {
 
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    cleanupRecordedAudioUrl();
     state.recordedChunks = [];
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
+    const mimeType =
+      typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : 'audio/mp4';
     const recorder = new MediaRecorder(stream);
     state.mediaRecorder = recorder;
 
@@ -858,6 +986,7 @@ async function toggleSpeakingRecording() {
 
     recorder.onstop = () => {
       stream.getTracks().forEach((t) => t.stop());
+      if (state.recordedChunks.length === 0) return;
       const blob = new Blob(state.recordedChunks, { type: mimeType });
       const url = URL.createObjectURL(blob);
       const player = document.getElementById('recorded-audio-player');
@@ -878,7 +1007,7 @@ async function toggleSpeakingRecording() {
     recorder.start();
     state.isRecording = true;
 
-    // Also start live Web Speech Recognition if supported
+    // Start live Web Speech Recognition with auto-restart on silence pauses
     const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SpeechRec) {
       const rec = new SpeechRec();
@@ -899,11 +1028,20 @@ async function toggleSpeakingRecording() {
           transcriptBox.dispatchEvent(new Event('input'));
         }
       };
+      rec.onend = () => {
+        if (state.isRecording) {
+          try {
+            rec.start();
+          } catch (e) {
+            // ignore
+          }
+        }
+      };
       try {
         rec.start();
         state.speechRecognition = rec;
       } catch (e) {
-        // ignore if already started
+        // ignore
       }
     }
 
@@ -925,6 +1063,30 @@ async function toggleSpeakingRecording() {
 // ==========================================================================
 // SUBMISSION, GRADING & EXAMINER REPORT
 // ==========================================================================
+
+function applyObjectiveQuestionHighlights(task, evalResult) {
+  if (!task || !evalResult) return;
+  if (task.section !== 'reading' && task.section !== 'listening') return;
+
+  (evalResult.questionResults || []).forEach((qr) => {
+    const card = document.getElementById(`qcard-${qr.id}`);
+    const exp = document.getElementById(`qexp-${qr.id}`);
+    if (card) {
+      card.classList.remove('is-correct', 'is-incorrect');
+      card.classList.add(qr.isCorrect ? 'is-correct' : 'is-incorrect');
+    }
+    if (exp) {
+      exp.hidden = false;
+      exp.innerHTML = qr.isCorrect
+        ? `<strong>&#10003; Correct (${escapeHtml(qr.correctAnswer)}):</strong> ${escapeHtml(qr.explanation)}`
+        : `<strong>&#10007; Answer Key: ${escapeHtml(qr.correctAnswer)}</strong> (You wrote: <em>${escapeHtml(qr.userAnswer)}</em>) &mdash; ${escapeHtml(qr.explanation)}`;
+    }
+  });
+
+  // Unlock listening transcript automatically
+  const transBox = document.getElementById('listening-transcript-box');
+  if (transBox) transBox.hidden = false;
+}
 
 async function handleTaskSubmission() {
   const task = state.currentTask;
@@ -978,7 +1140,9 @@ async function handleTaskSubmission() {
   } catch (err) {
     console.warn('Gemini evaluation error, falling back to local heuristic grader:', err);
     evalResult = evaluateSubmissionLocally(task, userSubmission);
-    evalResult.examinerSummary = `(Note: Gemini API call failed: ${err.message}. Showing local heuristic score.)\n\n` + evalResult.examinerSummary;
+    evalResult.examinerSummary =
+      `(Note: Gemini API call failed: ${err.message}. Showing local heuristic score.)\n\n` +
+      evalResult.examinerSummary;
   } finally {
     if (submitBtn) {
       submitBtn.disabled = false;
@@ -986,50 +1150,35 @@ async function handleTaskSubmission() {
     }
   }
 
-  // Highlight objective Reading/Listening cards in the DOM
-  if (task.section === 'reading' || task.section === 'listening') {
-    (evalResult.questionResults || []).forEach((qr) => {
-      const card = document.getElementById(`qcard-${qr.id}`);
-      const exp = document.getElementById(`qexp-${qr.id}`);
-      if (card) {
-        card.classList.remove('is-correct', 'is-incorrect');
-        card.classList.add(qr.isCorrect ? 'is-correct' : 'is-incorrect');
-      }
-      if (exp) {
-        exp.hidden = false;
-        exp.innerHTML = qr.isCorrect
-          ? `<strong>&#10003; Correct (${escapeHtml(qr.correctAnswer)}):</strong> ${escapeHtml(qr.explanation)}`
-          : `<strong>&#10007; Answer Key: ${escapeHtml(qr.correctAnswer)}</strong> (You wrote: <em>${escapeHtml(qr.userAnswer)}</em>) &mdash; ${escapeHtml(qr.explanation)}`;
-      }
-    });
+  applyObjectiveQuestionHighlights(task, evalResult);
 
-    // Unlock listening transcript automatically
-    const transBox = document.getElementById('listening-transcript-box');
-    if (transBox) transBox.hidden = false;
-  }
+  // Preserve previous elapsed time if re-evaluating a historical submission from 00:00
+  const existingEntry = state.history.find((h) => h.taskId === task.id);
+  const finalElapsedSeconds =
+    state.elapsedSeconds > 0
+      ? state.elapsedSeconds
+      : existingEntry?.elapsedSeconds || 0;
 
-  // Record in Non-Repeating History
   state.seenIds.add(task.id);
-  const elapsedFormatted = formatMMSS(state.elapsedSeconds);
-  const wasOvertime = state.elapsedSeconds > TARGET_SECONDS;
+  const elapsedFormatted = formatMMSS(finalElapsedSeconds);
+  const wasOvertime = finalElapsedSeconds > TARGET_SECONDS;
 
   const historyEntry = {
-    entryId: `hist-${Date.now()}`,
+    entryId: existingEntry?.entryId || `hist-${Date.now()}`,
     taskId: task.id,
     dateISO: new Date().toISOString(),
     section: task.section,
     title: task.title,
     topic: task.topic,
-    elapsedSeconds: state.elapsedSeconds,
+    elapsedSeconds: finalElapsedSeconds,
     elapsedFormatted: wasOvertime
-      ? `${elapsedFormatted} (+${formatMMSS(state.elapsedSeconds - TARGET_SECONDS)} over 15m)`
+      ? `${elapsedFormatted} (+${formatMMSS(finalElapsedSeconds - TARGET_SECONDS)} over 15m)`
       : `${elapsedFormatted} (within 15m)`,
     overallBand: evalResult.overallBand,
     userSubmission,
     evaluation: evalResult
   };
 
-  // Replace if already submitted same taskId in this session, else unshift
   state.history = [
     historyEntry,
     ...state.history.filter((h) => h.taskId !== task.id)
@@ -1041,6 +1190,7 @@ async function handleTaskSubmission() {
 
 function renderEvaluationReport(task, evalResult, historyEntry) {
   const sec = document.getElementById('evaluation-section');
+  if (!sec) return;
   sec.hidden = false;
 
   const bandNum = Number(evalResult.overallBand || 0).toFixed(1);
@@ -1128,7 +1278,7 @@ function renderEvaluationReport(task, evalResult, historyEntry) {
     <div style="padding:1.25rem 1.75rem 0;">
       <div style="background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:var(--radius-sm);padding:1rem 1.2rem;">
         <strong style="font-size:0.82rem;text-transform:uppercase;letter-spacing:0.04em;color:var(--accent-primary);">Examiner Diagnostic Summary</strong>
-        <p style="margin-top:0.35rem;font-size:0.94rem;color:var(--text-primary);">${escapeHtml(evalResult.examinerSummary || '')}</p>
+        <p style="margin-top:0.35rem;font-size:0.94rem;color:var(--text-primary);white-space:pre-line;">${escapeHtml(evalResult.examinerSummary || '')}</p>
       </div>
     </div>
 
@@ -1196,9 +1346,6 @@ async function handleGenerateAITask() {
     if (!newTask || !newTask.title) {
       throw new Error('Generated task was incomplete.');
     }
-    if (!newTask.id) {
-      newTask.id = `ai-${state.currentSection}-${Date.now()}`;
-    }
 
     state.customTasks.unshift(newTask);
     saveHistoryAndSeen();
@@ -1227,6 +1374,14 @@ function updateHeaderBadges() {
     lbl.textContent = connected ? 'Gemini Connected' : 'Setup Gemini API';
   }
 
+  // Update Next Unseen button badge for current section
+  const nextLabel = document.getElementById('next-unseen-label');
+  if (nextLabel) {
+    const sectionTasks = getMatchingSectionTasks(state.currentSection, state.writingSubMode);
+    const unseenCount = sectionTasks.filter((t) => !state.seenIds.has(t.id)).length;
+    nextLabel.innerHTML = `&#8634; Next Unseen Task (${unseenCount} left)`;
+  }
+
   // Highlight today's recommended skill badge
   const recSkill = computeRecommendedSkillForToday();
   ['reading', 'writing', 'listening', 'speaking'].forEach((s) => {
@@ -1238,6 +1393,7 @@ function updateHeaderBadges() {
 function renderHistoryModal() {
   const statsContainer = document.getElementById('history-stats-row');
   const listContainer = document.getElementById('history-list');
+  if (!statsContainer || !listContainer) return;
 
   const totalCompleted = state.history.length;
   const avgBand =
@@ -1264,7 +1420,7 @@ function renderHistoryModal() {
       <div class="stat-value">${state.seenIds.size}</div>
     </div>
     <div class="stat-box">
-      <div class="stat-label">Ready in Seed Bank</div>
+      <div class="stat-label">Unseen in Bank</div>
       <div class="stat-value">${unseenRemaining}</div>
     </div>
   `;
@@ -1282,20 +1438,30 @@ function renderHistoryModal() {
     .map(
       (h, idx) => `
       <div class="history-row" data-hist-idx="${idx}">
-        <div>
-          <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.2rem;">
+        <div style="flex:1;">
+          <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.2rem;flex-wrap:wrap;">
             <span class="section-badge">${escapeHtml(h.section.toUpperCase())}</span>
             <strong style="font-size:0.95rem;">${escapeHtml(h.title)}</strong>
+            ${
+              h.evaluation?.isHeuristicFallback
+                ? '<span style="font-size:0.7rem;padding:0.08rem 0.45rem;border-radius:99px;background:var(--amber-soft);color:var(--amber-warn);font-weight:700;">Heuristic Score — Click to AI Re-Grade</span>'
+                : ''
+            }
           </div>
           <div style="font-size:0.78rem;color:var(--text-muted);">
             Topic: ${escapeHtml(h.topic || '')} &bull; Time: ${escapeHtml(h.elapsedFormatted || '')} &bull; ${new Date(h.dateISO).toLocaleDateString()}
           </div>
         </div>
-        <div style="text-align:right;">
-          <div style="font-family:var(--font-mono);font-size:1.15rem;font-weight:800;color:var(--accent-primary);">
-            Band ${Number(h.overallBand || 0).toFixed(1)}
+        <div style="display:flex;align-items:center;gap:0.75rem;">
+          <div style="text-align:right;">
+            <div style="font-family:var(--font-mono);font-size:1.15rem;font-weight:800;color:var(--accent-primary);">
+              Band ${Number(h.overallBand || 0).toFixed(1)}
+            </div>
+            <span style="font-size:0.74rem;color:var(--text-muted);">Inspect &rarr;</span>
           </div>
-          <span style="font-size:0.74rem;color:var(--text-muted);">Click to inspect &rarr;</span>
+          <button type="button" class="icon-btn btn-delete-hist" data-hist-idx="${idx}" title="Remove from history" aria-label="Remove session">
+            &#10005;
+          </button>
         </div>
       </div>`
     )
@@ -1311,9 +1477,25 @@ function renderHistoryModal() {
         switchSectionTab(matchingTask.section, false);
         saveDraft(matchingTask.id, entry.userSubmission);
         loadTaskIntoWorkspace(matchingTask);
+        state.elapsedSeconds = entry.elapsedSeconds || 0;
+        updateTimerUI();
+        applyObjectiveQuestionHighlights(matchingTask, entry.evaluation);
         renderEvaluationReport(matchingTask, entry.evaluation, entry);
       }
       document.getElementById('modal-history').hidden = true;
+    });
+  });
+
+  listContainer.querySelectorAll('.btn-delete-hist').forEach((delBtn) => {
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const idx = Number(delBtn.getAttribute('data-hist-idx'));
+      const entry = state.history[idx];
+      if (!entry) return;
+      state.history.splice(idx, 1);
+      state.seenIds.delete(entry.taskId);
+      saveHistoryAndSeen();
+      renderHistoryModal();
     });
   });
 }
@@ -1332,6 +1514,8 @@ function switchSectionTab(section, loadUnseen = true) {
   if (subSelect) {
     subSelect.hidden = section !== 'writing';
   }
+
+  updateHeaderBadges();
 
   if (loadUnseen) {
     const task = pickNextUnseenTask(section, state.writingSubMode);
@@ -1352,7 +1536,7 @@ function applyTheme(theme) {
 }
 
 function escapeHtml(str) {
-  return String(str || '')
+  return String(str ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
@@ -1362,10 +1546,25 @@ function escapeHtmlAttr(str) {
   return escapeHtml(str).replace(/"/g, '&quot;');
 }
 
+function showApiTestBanner(message, isSuccess) {
+  const statusEl = document.getElementById('api-test-status');
+  if (!statusEl) return;
+  statusEl.hidden = false;
+  statusEl.style.background = isSuccess ? 'var(--emerald-soft)' : 'var(--crimson-soft)';
+  statusEl.style.border = `1px solid ${isSuccess ? 'var(--emerald-border)' : 'var(--crimson-border)'}`;
+  statusEl.style.color = isSuccess ? 'var(--emerald-ok)' : 'var(--crimson-err)';
+  statusEl.textContent = message;
+}
+
 function initApp() {
   loadPersistedState();
   applyTheme(state.theme);
   updateHeaderBadges();
+
+  // Pre-warm browser TTS voices list
+  if ('speechSynthesis' in window) {
+    window.speechSynthesis.getVoices();
+  }
 
   // Start on today's recommended skill in the daily rotation
   const recommended = computeRecommendedSkillForToday();
@@ -1382,6 +1581,7 @@ function initApp() {
   // Writing submode filter
   document.getElementById('writing-submode-select')?.addEventListener('change', (e) => {
     state.writingSubMode = e.target.value;
+    updateHeaderBadges();
     const next = pickNextUnseenTask('writing', state.writingSubMode);
     if (next) loadTaskIntoWorkspace(next);
   });
@@ -1417,12 +1617,16 @@ function initApp() {
   });
 
   // History Modal
+  const historyModal = document.getElementById('modal-history');
   document.getElementById('btn-open-history')?.addEventListener('click', () => {
     renderHistoryModal();
-    document.getElementById('modal-history').hidden = false;
+    historyModal.hidden = false;
   });
   document.getElementById('btn-close-history')?.addEventListener('click', () => {
-    document.getElementById('modal-history').hidden = true;
+    historyModal.hidden = true;
+  });
+  historyModal?.addEventListener('click', (e) => {
+    if (e.target === historyModal) historyModal.hidden = true;
   });
 
   // Export History JSON
@@ -1467,22 +1671,68 @@ function initApp() {
   const keyInput = document.getElementById('input-gemini-key');
   document.getElementById('btn-open-settings')?.addEventListener('click', () => {
     if (keyInput) keyInput.value = state.apiKey;
+    const statusEl = document.getElementById('api-test-status');
+    if (statusEl) statusEl.hidden = true;
     settingsModal.hidden = false;
   });
   document.getElementById('btn-close-settings')?.addEventListener('click', () => {
     settingsModal.hidden = true;
   });
+  settingsModal?.addEventListener('click', (e) => {
+    if (e.target === settingsModal) settingsModal.hidden = true;
+  });
+
+  document.getElementById('btn-test-api-key')?.addEventListener('click', async () => {
+    const candidateKey = (keyInput?.value || '').trim();
+    if (!candidateKey) {
+      showApiTestBanner('Please paste a Gemini API key first.', false);
+      return;
+    }
+    const testBtn = document.getElementById('btn-test-api-key');
+    testBtn.disabled = true;
+    testBtn.textContent = 'Testing...';
+    try {
+      const activeModel = await verifyGeminiApiKey(candidateKey);
+      state.apiKey = candidateKey;
+      localStorage.setItem(STORAGE_KEYS.API_KEY, state.apiKey);
+      updateHeaderBadges();
+      showApiTestBanner(`✓ Connected successfully to ${activeModel}! Key saved.`, true);
+    } catch (err) {
+      showApiTestBanner(`Connection failed: ${err.message}`, false);
+    } finally {
+      testBtn.disabled = false;
+      testBtn.textContent = 'Test Connection';
+    }
+  });
+
   document.getElementById('btn-save-api-key')?.addEventListener('click', () => {
     state.apiKey = (keyInput?.value || '').trim();
     localStorage.setItem(STORAGE_KEYS.API_KEY, state.apiKey);
     updateHeaderBadges();
     settingsModal.hidden = true;
   });
+
   document.getElementById('btn-clear-api-key')?.addEventListener('click', () => {
     state.apiKey = '';
     if (keyInput) keyInput.value = '';
     localStorage.removeItem(STORAGE_KEYS.API_KEY);
     updateHeaderBadges();
+    showApiTestBanner('API key removed from browser storage.', false);
+  });
+
+  // Global keyboard shortcuts (Escape closes modals, Ctrl/Cmd+Enter submits active task)
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (historyModal && !historyModal.hidden) historyModal.hidden = true;
+      if (settingsModal && !settingsModal.hidden) settingsModal.hidden = true;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      const submitBtn = document.getElementById('btn-submit-task');
+      if (submitBtn && !submitBtn.disabled) {
+        e.preventDefault();
+        handleTaskSubmission();
+      }
+    }
   });
 }
 

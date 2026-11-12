@@ -10,8 +10,9 @@ const DEFAULT_GEMINI_MODELS = [
 ];
 
 let cachedDiscoveredModel = null;
+let autoRotateTaskCounter = 0;
 
-async function discoverAvailableFlashModel(apiKey) {
+export async function discoverAvailableFlashModel(apiKey) {
   if (cachedDiscoveredModel) return cachedDiscoveredModel;
   try {
     const res = await fetch(
@@ -24,7 +25,12 @@ async function discoverAvailableFlashModel(apiKey) {
     );
     const flashModel =
       models.find((m) => m.name.includes('gemini-3.8-flash')) ||
-      models.find((m) => m.name.includes('flash') && !m.name.includes('2.0') && !m.name.includes('1.5')) ||
+      models.find(
+        (m) =>
+          m.name.includes('flash') &&
+          !m.name.includes('2.0') &&
+          !m.name.includes('1.5')
+      ) ||
       models[0];
     if (flashModel && flashModel.name) {
       cachedDiscoveredModel = flashModel.name.replace(/^models\//, '');
@@ -36,18 +42,35 @@ async function discoverAvailableFlashModel(apiKey) {
   return null;
 }
 
+/**
+ * Extracts and parses JSON even if the model wraps it in markdown fences or prose.
+ */
 function parseModelJSON(rawText) {
   const cleaned = String(rawText || '')
     .trim()
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```$/i, '')
     .trim();
-  return JSON.parse(cleaned);
+  try {
+    return JSON.parse(cleaned);
+  } catch (firstErr) {
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      return JSON.parse(cleaned.slice(firstBrace, lastBrace + 1));
+    }
+    throw firstErr;
+  }
 }
 
 async function callGeminiJSON(apiKey, parts, temperature = 0.7) {
   let lastError = null;
-  const candidateModels = [...DEFAULT_GEMINI_MODELS];
+  const candidateModels = cachedDiscoveredModel
+    ? [
+        cachedDiscoveredModel,
+        ...DEFAULT_GEMINI_MODELS.filter((m) => m !== cachedDiscoveredModel)
+      ]
+    : [...DEFAULT_GEMINI_MODELS];
 
   const tryModel = async (model) => {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
@@ -73,6 +96,7 @@ async function callGeminiJSON(apiKey, parts, temperature = 0.7) {
     if (!rawText) {
       throw new Error(`Empty response from Gemini API (${model}).`);
     }
+    cachedDiscoveredModel = model;
     return parseModelJSON(rawText);
   };
 
@@ -81,7 +105,6 @@ async function callGeminiJSON(apiKey, parts, temperature = 0.7) {
       return await tryModel(model);
     } catch (err) {
       lastError = err;
-      // If 404 Not Found, continue to next model or auto-discover
       if (err.status && err.status !== 404) {
         break;
       }
@@ -89,6 +112,7 @@ async function callGeminiJSON(apiKey, parts, temperature = 0.7) {
   }
 
   // Dynamic fallback: query /v1beta/models for the active flash model on this account
+  cachedDiscoveredModel = null;
   const discovered = await discoverAvailableFlashModel(apiKey);
   if (discovered && !candidateModels.includes(discovered)) {
     try {
@@ -102,13 +126,116 @@ async function callGeminiJSON(apiKey, parts, temperature = 0.7) {
 }
 
 /**
+ * Verifies a user's Gemini API key and returns the active model name.
+ */
+export async function verifyGeminiApiKey(apiKey) {
+  const result = await callGeminiJSON(
+    apiKey,
+    [{ text: 'Return strict JSON: {"status":"ok"}' }],
+    0.0
+  );
+  if (result && result.status) {
+    return cachedDiscoveredModel || DEFAULT_GEMINI_MODELS[0];
+  }
+  return cachedDiscoveredModel || DEFAULT_GEMINI_MODELS[0];
+}
+
+/**
+ * Rounds any numeric score to official IELTS 0.5 band increments (clamped 0.0 - 9.0).
+ */
+export function roundIeltsBand(val, fallback = 6.5) {
+  const num = Number(val);
+  if (!Number.isFinite(num)) return fallback;
+  const clamped = Math.min(9.0, Math.max(0.0, num));
+  return Math.round(clamped * 2) / 2;
+}
+
+/**
+ * Sanitizes and normalizes an AI-generated task so it never fails rendering or grading.
+ */
+function sanitizeGeneratedTask(raw, section, subMode) {
+  const task = raw && typeof raw === 'object' ? raw : {};
+  task.section = section;
+  if (!task.id || typeof task.id !== 'string') {
+    task.id = `ai-${section}-${Date.now()}`;
+  }
+  if (!task.title) {
+    task.title = `Academic ${section.toUpperCase()} Workout`;
+  }
+  if (!task.topic) {
+    task.topic = 'Interdisciplinary Academic Research';
+  }
+
+  if (section === 'reading' || section === 'listening') {
+    if (!Array.isArray(task.questions)) task.questions = [];
+    task.questions = task.questions.map((q, idx) => {
+      const qId = q.id || `q${idx + 1}`;
+      const type = q.type || (idx < 4 ? (section === 'reading' ? 'tfng' : 'fill') : 'mcq');
+      let options = Array.isArray(q.options) ? q.options.map(String) : undefined;
+      if (type === 'tfng') {
+        options = ['TRUE', 'FALSE', 'NOT GIVEN'];
+      }
+      let answer = String(q.answer ?? '').trim();
+
+      if (type === 'tfng') {
+        const up = answer.toUpperCase();
+        if (up.includes('TRUE') || up === 'T') answer = 'TRUE';
+        else if (up.includes('FALSE') || up === 'F') answer = 'FALSE';
+        else answer = 'NOT GIVEN';
+      } else if (type === 'mcq' && Array.isArray(options) && options.length > 0) {
+        // If AI returned "B" or "B)" instead of the full option string, match it to options
+        if (!options.includes(answer)) {
+          const letterMatch = answer.match(/^([A-D])\b/i);
+          if (letterMatch) {
+            const prefix = letterMatch[1].toUpperCase();
+            const found = options.find((opt) =>
+              opt.trim().toUpperCase().startsWith(prefix + ')') ||
+              opt.trim().toUpperCase().startsWith(prefix + '.')
+            );
+            if (found) answer = found;
+          }
+        }
+      }
+
+      const acceptableAnswers = Array.isArray(q.acceptableAnswers) && q.acceptableAnswers.length > 0
+        ? Array.from(new Set([answer, ...q.acceptableAnswers.map(String)]))
+        : [answer];
+
+      return {
+        id: qId,
+        group: q.group || (idx < 4 ? 'Task A — Questions 1–4' : 'Task B — Questions 5–7'),
+        type,
+        prompt: String(q.prompt || `Question ${idx + 1}`),
+        options,
+        answer,
+        acceptableAnswers,
+        explanation: String(q.explanation || `Verified against the academic ${section} text.`)
+      };
+    });
+  }
+
+  if (section === 'writing') {
+    task.subMode = subMode;
+    task.targetWords = subMode === 'task1' ? 150 : 180;
+  }
+
+  return task;
+}
+
+/**
  * Generates a brand-new, non-repeating 15-minute IELTS Academic task via Gemini.
  */
 export async function generateFreshTaskWithGemini(apiKey, section, subMode, excludedTopics) {
   const exclusionList =
     excludedTopics && excludedTopics.length > 0
-      ? excludedTopics.join('; ')
+      ? excludedTopics.slice(0, 60).join('; ')
       : 'None yet';
+
+  let resolvedWritingMode = subMode;
+  if (section === 'writing' && (!subMode || subMode === 'any')) {
+    autoRotateTaskCounter += 1;
+    resolvedWritingMode = autoRotateTaskCounter % 2 === 1 ? 'task1' : 'task2';
+  }
 
   let schemaInstruction = '';
   if (section === 'reading') {
@@ -138,16 +265,68 @@ Return strict JSON with this exact structure:
       "answer": "TRUE",
       "explanation": "<Exact paragraph reference and reasoning>"
     },
-    // q2, q3, q4 also type "tfng" (ensure a mix of TRUE, FALSE, and NOT GIVEN)
-    // q5, q6 type "fill" (ONE WORD ONLY taken directly from the passage, include "answer" and "acceptableAnswers": ["word"])
-    // q7 type "mcq" with 4 options ["A) ...", "B) ...", "C) ...", "D) ..."] and "answer" matching the exact winning option string
+    {
+      "id": "q2",
+      "group": "Task A — Questions 1–4: True / False / Not Given",
+      "type": "tfng",
+      "prompt": "<Statement 2>",
+      "options": ["TRUE", "FALSE", "NOT GIVEN"],
+      "answer": "FALSE",
+      "explanation": "<Exact paragraph reference and reasoning>"
+    },
+    {
+      "id": "q3",
+      "group": "Task A — Questions 1–4: True / False / Not Given",
+      "type": "tfng",
+      "prompt": "<Statement 3>",
+      "options": ["TRUE", "FALSE", "NOT GIVEN"],
+      "answer": "NOT GIVEN",
+      "explanation": "<Exact paragraph reference and reasoning>"
+    },
+    {
+      "id": "q4",
+      "group": "Task A — Questions 1–4: True / False / Not Given",
+      "type": "tfng",
+      "prompt": "<Statement 4>",
+      "options": ["TRUE", "FALSE", "NOT GIVEN"],
+      "answer": "TRUE",
+      "explanation": "<Exact paragraph reference and reasoning>"
+    },
+    {
+      "id": "q5",
+      "group": "Task B — Questions 5–7: Sentence Completion & Multiple Choice (ONE WORD ONLY for Q5–Q6)",
+      "type": "fill",
+      "prompt": "<Sentence with ________ blank> (Write ONE WORD from the passage)",
+      "answer": "<word>",
+      "acceptableAnswers": ["<word>"],
+      "explanation": "<Paragraph reference>"
+    },
+    {
+      "id": "q6",
+      "group": "Task B — Questions 5–7: Sentence Completion & Multiple Choice (ONE WORD ONLY for Q5–Q6)",
+      "type": "fill",
+      "prompt": "<Sentence with ________ blank> (Write ONE WORD from the passage)",
+      "answer": "<word>",
+      "acceptableAnswers": ["<word>"],
+      "explanation": "<Paragraph reference>"
+    },
+    {
+      "id": "q7",
+      "group": "Task B — Questions 5–7: Sentence Completion & Multiple Choice (ONE WORD ONLY for Q5–Q6)",
+      "type": "mcq",
+      "prompt": "<Multiple choice question stem>",
+      "options": ["A) <Option A>", "B) <Option B>", "C) <Option C>", "D) <Option D>"],
+      "answer": "B) <Option B>",
+      "explanation": "<Paragraph reference>"
+    }
   ]
 }`;
   } else if (section === 'writing') {
-    const mode = subMode === 'task1' ? 'task1' : 'task2';
-    if (mode === 'task1') {
+    if (resolvedWritingMode === 'task1') {
+      const chartTypes = ['bar', 'line', 'table'];
+      const chosenChart = chartTypes[Math.floor(Math.random() * chartTypes.length)];
       schemaInstruction = `
-Generate an IELTS Academic Writing Task 1 data report workout (15-minute sprint, target 150 words).
+Generate an IELTS Academic Writing Task 1 data report workout (15-minute sprint, target 150 words) featuring a "${chosenChart}" chart/table.
 Return strict JSON with this exact structure:
 {
   "id": "ai-write-t1-<unique-slug>",
@@ -160,7 +339,7 @@ Return strict JSON with this exact structure:
   "instructions": "Spend about 15 minutes on this task. Summarize the information by selecting and reporting the main features, and make comparisons where relevant. Write at least 150 words.",
   "prompt": "<Official IELTS Task 1 prompt describing what the chart/table shows>",
   "chartSpec": {
-    "chartType": "bar", // or "line" or "table"
+    "chartType": "${chosenChart}",
     "title": "<Chart Header Title>",
     "unit": "%",
     "categories": ["<Cat1>", "<Cat2>", "<Cat3>", "<Cat4>"],
@@ -204,11 +383,71 @@ Return strict JSON with this exact structure:
   "script": [
     { "speaker": "Dr. Evans", "pitch": 0.92, "rate": 0.97, "text": "<2-3 natural academic sentences>" },
     { "speaker": "Maya", "pitch": 1.1, "rate": 1.0, "text": "<2-3 sentences containing specific facts/numbers>" }
-    // 7 to 9 spoken turns total, rich in academic detail and distractors
   ],
   "questions": [
-    // q1, q2, q3, q4: type "fill", group "Task A — Questions 1–4: Note Completion (ONE WORD AND/OR A NUMBER)", with "prompt", "answer", "acceptableAnswers": ["..."], "explanation"
-    // q5, q6, q7: type "mcq", group "Task B — Questions 5–7: Multiple Choice", with 4 options ["A) ...", "B) ...", "C) ...", "D) ..."], "answer" matching exact option string, "explanation"
+    {
+      "id": "q1",
+      "group": "Task A — Questions 1–4: Note Completion (ONE WORD AND/OR A NUMBER)",
+      "type": "fill",
+      "prompt": "<Note sentence with ________ blank>",
+      "answer": "<exact word or number>",
+      "acceptableAnswers": ["<exact word or number>"],
+      "explanation": "<Quote from speaker>"
+    },
+    {
+      "id": "q2",
+      "group": "Task A — Questions 1–4: Note Completion (ONE WORD AND/OR A NUMBER)",
+      "type": "fill",
+      "prompt": "<Note sentence with ________ blank>",
+      "answer": "<exact word or number>",
+      "acceptableAnswers": ["<exact word or number>"],
+      "explanation": "<Quote from speaker>"
+    },
+    {
+      "id": "q3",
+      "group": "Task A — Questions 1–4: Note Completion (ONE WORD AND/OR A NUMBER)",
+      "type": "fill",
+      "prompt": "<Note sentence with ________ blank>",
+      "answer": "<exact word or number>",
+      "acceptableAnswers": ["<exact word or number>"],
+      "explanation": "<Quote from speaker>"
+    },
+    {
+      "id": "q4",
+      "group": "Task A — Questions 1–4: Note Completion (ONE WORD AND/OR A NUMBER)",
+      "type": "fill",
+      "prompt": "<Note sentence with ________ blank>",
+      "answer": "<exact word or number>",
+      "acceptableAnswers": ["<exact word or number>"],
+      "explanation": "<Quote from speaker>"
+    },
+    {
+      "id": "q5",
+      "group": "Task B — Questions 5–7: Multiple Choice",
+      "type": "mcq",
+      "prompt": "<Question 5 stem>",
+      "options": ["A) <Opt A>", "B) <Opt B>", "C) <Opt C>", "D) <Opt D>"],
+      "answer": "A) <Opt A>",
+      "explanation": "<Quote from speaker>"
+    },
+    {
+      "id": "q6",
+      "group": "Task B — Questions 5–7: Multiple Choice",
+      "type": "mcq",
+      "prompt": "<Question 6 stem>",
+      "options": ["A) <Opt A>", "B) <Opt B>", "C) <Opt C>", "D) <Opt D>"],
+      "answer": "C) <Opt C>",
+      "explanation": "<Quote from speaker>"
+    },
+    {
+      "id": "q7",
+      "group": "Task B — Questions 5–7: Multiple Choice",
+      "type": "mcq",
+      "prompt": "<Question 7 stem>",
+      "options": ["A) <Opt A>", "B) <Opt B>", "C) <Opt C>", "D) <Opt D>"],
+      "answer": "B) <Opt B>",
+      "explanation": "<Quote from speaker>"
+    }
   ]
 }`;
   } else {
@@ -251,7 +490,8 @@ You MUST choose a completely different academic domain, subject matter, and angl
 
 ${schemaInstruction}`;
 
-  return await callGeminiJSON(apiKey, [{ text: promptText }], 0.8);
+  const rawTask = await callGeminiJSON(apiKey, [{ text: promptText }], 0.8);
+  return sanitizeGeneratedTask(rawTask, section, resolvedWritingMode);
 }
 
 /**
@@ -337,7 +577,94 @@ Return strict JSON with this exact schema:
     });
   }
 
-  return await callGeminiJSON(apiKey, parts, 0.35);
+  const rawEval = await callGeminiJSON(apiKey, parts, 0.35);
+
+  // Sanitize & normalize Band scores to official 0.5 increments
+  const criteria = Array.isArray(rawEval?.criteria)
+    ? rawEval.criteria.map((c, idx) => ({
+        name: c.name || criteriaNames[idx] || `Criterion ${idx + 1}`,
+        score: roundIeltsBand(c.score, 6.5),
+        feedback: String(c.feedback || '')
+      }))
+    : [];
+
+  const avgFromCriteria =
+    criteria.length > 0
+      ? criteria.reduce((s, c) => s + c.score, 0) / criteria.length
+      : 6.5;
+
+  return {
+    overallBand: roundIeltsBand(rawEval?.overallBand, roundIeltsBand(avgFromCriteria)),
+    criteria,
+    examinerSummary: String(rawEval?.examinerSummary || ''),
+    corrections: Array.isArray(rawEval?.corrections) ? rawEval.corrections : [],
+    lexicalUpgrades: Array.isArray(rawEval?.lexicalUpgrades) ? rawEval.lexicalUpgrades : [],
+    modelAnswer: String(rawEval?.modelAnswer || task.modelAnswer || '')
+  };
+}
+
+const NUMBER_WORDS_MAP = {
+  zero: '0',
+  one: '1',
+  two: '2',
+  three: '3',
+  four: '4',
+  five: '5',
+  six: '6',
+  seven: '7',
+  eight: '8',
+  nine: '9',
+  ten: '10',
+  eleven: '11',
+  twelve: '12',
+  thirteen: '13',
+  fourteen: '14',
+  fifteen: '15',
+  sixteen: '16',
+  seventeen: '17',
+  eighteen: '18',
+  nineteen: '19',
+  twenty: '20',
+  'twenty-two': '22',
+  'thirty-four': '34',
+  'thirty-five': '35',
+  forty: '40',
+  'ninety-five': '95'
+};
+
+function normalizeAnswerToken(str) {
+  let s = String(str ?? '')
+    .toLowerCase()
+    .trim()
+    .replace(/[.,!?;:"']/g, '')
+    .replace(/^(a|an|the)\s+/i, '')
+    .replace(/\s+percent$/i, '')
+    .replace(/%$/, '')
+    .trim();
+  if (NUMBER_WORDS_MAP[s]) {
+    s = NUMBER_WORDS_MAP[s];
+  }
+  return s;
+}
+
+function isObjectiveAnswerMatch(q, rawUser) {
+  const userNorm = normalizeAnswerToken(rawUser);
+  if (!userNorm) return false;
+
+  const validList = (q.acceptableAnswers || [q.answer]).map((a) =>
+    normalizeAnswerToken(a)
+  );
+  if (validList.includes(userNorm)) return true;
+
+  // Also allow matching MCQ by option letter (e.g. "B" matches "B) Installing them...")
+  if (q.type === 'mcq' && q.answer) {
+    const ansLetter = String(q.answer).trim().slice(0, 2).toLowerCase().replace(/[^a-d]/g, '');
+    const userLetter = String(rawUser).trim().slice(0, 2).toLowerCase().replace(/[^a-d]/g, '');
+    if (ansLetter && userLetter && ansLetter === userLetter && String(rawUser).trim().length <= 3) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -346,18 +673,15 @@ Return strict JSON with this exact schema:
  */
 export function evaluateSubmissionLocally(task, userSubmission) {
   if (task.section === 'reading' || task.section === 'listening') {
-    const answersMap = userSubmission || {};
+    const answersMap = userSubmission && typeof userSubmission === 'object' ? userSubmission : {};
     let correctCount = 0;
-    const total = (task.questions || []).length;
+    const questions = task.questions || [];
+    const total = questions.length;
     const questionResults = [];
 
-    for (const q of task.questions || []) {
+    for (const q of questions) {
       const rawUser = String(answersMap[q.id] || '').trim();
-      const normUser = rawUser.toLowerCase().replace(/[.,!?;:]/g, '').trim();
-      const validList = (q.acceptableAnswers || [q.answer]).map((a) =>
-        String(a).toLowerCase().replace(/[.,!?;:]/g, '').trim()
-      );
-      const isCorrect = normUser.length > 0 && validList.includes(normUser);
+      const isCorrect = isObjectiveAnswerMatch(q, rawUser);
       if (isCorrect) correctCount++;
       questionResults.push({
         id: q.id,
@@ -374,7 +698,7 @@ export function evaluateSubmissionLocally(task, userSubmission) {
     let band = 4.0;
     if (ratio >= 0.95) band = 9.0;
     else if (ratio >= 0.85) band = 8.0;
-    else if (ratio >= 0.72) band = 7.0;
+    else if (ratio >= 0.71) band = 7.0;
     else if (ratio >= 0.57) band = 6.5;
     else if (ratio >= 0.42) band = 5.5;
     else if (ratio >= 0.28) band = 5.0;
@@ -384,10 +708,10 @@ export function evaluateSubmissionLocally(task, userSubmission) {
     const tfngQs = questionResults.filter((_, i) => i < 4);
     const compQs = questionResults.filter((_, i) => i >= 4);
     const tfngScore = tfngQs.length
-      ? Math.round((tfngQs.filter((x) => x.isCorrect).length / tfngQs.length) * 9 * 2) / 2
+      ? roundIeltsBand((tfngQs.filter((x) => x.isCorrect).length / tfngQs.length) * 9)
       : band;
     const compScore = compQs.length
-      ? Math.round((compQs.filter((x) => x.isCorrect).length / compQs.length) * 9 * 2) / 2
+      ? roundIeltsBand((compQs.filter((x) => x.isCorrect).length / compQs.length) * 9)
       : band;
 
     return {
@@ -458,7 +782,7 @@ export function evaluateSubmissionLocally(task, userSubmission) {
   const gramScore = avgWordsPerSentence >= 14 && avgWordsPerSentence <= 28 ? 7.0 : 6.0;
 
   const rawAvg = (taskScore + coherenceScore + lexScore + gramScore) / 4;
-  const overallBand = Math.round(rawAvg * 2) / 2;
+  const overallBand = roundIeltsBand(rawAvg, 6.0);
 
   const isSpeaking = task.section === 'speaking';
 
@@ -489,7 +813,7 @@ export function evaluateSubmissionLocally(task, userSubmission) {
     ],
     examinerSummary: `Estimated Band ${overallBand.toFixed(
       1
-    )} (Local Heuristic Grader — ${wordCount} words). Tip: Click "API Key & Settings" in the top bar and paste a free Google Gemini API key to unlock line-by-line grammar corrections and multimodal voice grading!`,
+    )} (Local Heuristic Grader — ${wordCount} words). Tip: Click "Re-Evaluate with Gemini AI" above to unlock line-by-line grammar corrections and multimodal voice grading!`,
     corrections: [
       {
         original: `Word count check: ${wordCount} words submitted`,

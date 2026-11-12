@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>IELTS Academic 15 — Daily Focus Practice & Band Examiner</title>
+  <title>IELTS Academic 15 — Daily Focus Practice &amp; Band Examiner</title>
   <meta name="description" content="Daily 15-minute IELTS Academic practice webapp with non-blocking focus timer, non-repeating history engine, and official IELTS Band 0-9 scoring and corrections." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -87,12 +87,12 @@
       <div class="task-generator-controls">
         <select id="writing-submode-select" class="submode-select" aria-label="Writing Task Mode" hidden>
           <option value="any">Writing: Auto-Rotate (Task 1 &amp; Task 2)</option>
-          <option value="task1">Academic Task 1 (Chart/Graph 15m Sprint)</option>
+          <option value="task1">Academic Task 1 (Chart/Graph/Table 15m Sprint)</option>
           <option value="task2">Academic Task 2 (Essay Core / Full Essay)</option>
         </select>
 
         <button id="btn-next-unseen" class="btn-secondary" type="button" title="Load next unseen task from bank">
-          <span>&#8634; Next Unseen Task</span>
+          <span id="next-unseen-label">&#8634; Next Unseen Task</span>
         </button>
 
         <button id="btn-generate-ai" class="btn-primary" type="button" title="Generate a brand-new unseen IELTS task using Gemini AI">
@@ -152,7 +152,7 @@
 
         <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.9rem;">
           <p style="font-size:0.83rem;color:var(--text-secondary);">
-            Completed tasks are permanently excluded from future workouts so questions never repeat. Click any session to review your feedback.
+            Completed tasks are permanently excluded from future workouts so questions never repeat. Click any session to review or re-evaluate your submission.
           </p>
           <div style="display:flex;gap:0.45rem;">
             <button id="btn-export-history" class="btn-secondary" type="button" style="padding:0.35rem 0.7rem;font-size:0.78rem;">
@@ -172,7 +172,7 @@
 
   <!-- MODAL 2: GEMINI API KEY & SETTINGS -->
   <div id="modal-settings" class="modal-backdrop" hidden>
-    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-settings-title" style="max-width:540px;">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-settings-title" style="max-width:560px;">
       <div class="modal-header">
         <h2 id="modal-settings-title" class="modal-title">Google Gemini API &amp; Examiner Settings</h2>
         <button id="btn-close-settings" class="icon-btn" type="button" aria-label="Close Settings">&#10005;</button>
@@ -182,14 +182,19 @@
           <label for="input-gemini-key" class="form-label">Google Gemini API Key (Stored locally in your browser)</label>
           <input id="input-gemini-key" class="form-input" type="password" placeholder="AIzaSy..." autocomplete="off" />
           <p class="helper-text">
-            Used to generate infinite non-repeating IELTS Academic tasks and grade your Writing &amp; Speaking (including voice recordings) with official IELTS Band 0–9 descriptors. Get a free key at
+            Used to generate infinite non-repeating IELTS Academic tasks and grade your Writing &amp; Speaking (including voice recordings) with official IELTS Band 0–9 descriptors (`gemini-3.8-flash`). Get a free key at
             <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary);font-weight:600;">Google AI Studio</a>.
           </p>
         </div>
 
-        <div style="display:flex;justify-content:flex-end;gap:0.6rem;margin-top:1.25rem;">
-          <button id="btn-clear-api-key" class="btn-secondary" type="button">Remove Key</button>
-          <button id="btn-save-api-key" class="btn-primary" type="button">Save &amp; Connect</button>
+        <div id="api-test-status" style="font-size:0.82rem;padding:0.65rem 0.85rem;border-radius:var(--radius-sm);margin-bottom:1rem;" hidden></div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:0.6rem;margin-top:1rem;">
+          <button id="btn-test-api-key" class="btn-secondary" type="button">Test Connection</button>
+          <div style="display:flex;gap:0.6rem;">
+            <button id="btn-clear-api-key" class="btn-secondary" type="button">Remove Key</button>
+            <button id="btn-save-api-key" class="btn-primary" type="button">Save &amp; Connect</button>
+          </div>
         </div>
       </div>
     </div>
