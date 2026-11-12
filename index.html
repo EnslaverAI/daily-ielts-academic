@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IELTS Academic 15 — Daily Focus Practice & Band Examiner</title>
+  <meta name="description" content="Daily 15-minute IELTS Academic practice webapp with non-blocking focus timer, non-repeating history engine, and official IELTS Band 0-9 scoring and corrections." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700;800&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,400&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./index.css" />
+</head>
+<body>
+  <!-- TOP HEADER & NON-BLOCKING 15-MINUTE REMINDER TIMER -->
+  <header class="app-header">
+    <div class="header-inner">
+      <div class="brand-group">
+        <div class="brand-mark" aria-hidden="true">IX</div>
+        <div>
+          <h1 class="brand-title">IELTS Academic 15</h1>
+          <p class="brand-subtitle">Daily 15-Min Focus Studio &bull; Non-Repeating Bank &bull; Band Examiner</p>
+        </div>
+      </div>
+
+      <!-- Non-Blocking 15:00 Reminder Timer -->
+      <div id="timer-dock" class="timer-dock" title="15-minute pacing reminder — never cuts off your work">
+        <span id="timer-status-dot" class="timer-status-dot"></span>
+        <div class="timer-readout-wrap">
+          <span id="timer-readout" class="timer-readout">15:00</span>
+          <span id="timer-tag" class="timer-tag">15m Pace</span>
+        </div>
+        <div class="timer-controls">
+          <button id="btn-timer-toggle" class="icon-btn" type="button" title="Start / Pause Timer" aria-label="Start or Pause Timer">
+            <span id="timer-toggle-icon">&#9654;</span>
+          </button>
+          <button id="btn-timer-reset" class="icon-btn" type="button" title="Reset Timer to 15:00" aria-label="Reset Timer">
+            &#8635;
+          </button>
+        </div>
+      </div>
+
+      <!-- Right Actions: History Archive, API Settings, Theme Toggle -->
+      <div class="header-actions">
+        <button id="btn-open-history" class="pill-btn" type="button">
+          <span>History &amp; Bands</span>
+          <span id="history-count-badge" class="badge-count">0</span>
+        </button>
+        <button id="btn-open-settings" class="pill-btn" type="button">
+          <span id="api-status-dot" class="api-status-dot"></span>
+          <span id="api-status-label">Gemini API</span>
+        </button>
+        <button id="btn-theme-toggle" class="pill-btn" type="button" title="Toggle Light / Night Focus Theme" aria-label="Toggle Theme">
+          <span id="theme-icon">&#9790;</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- GENTLE OVERTIME REMINDER BANNER (Shown when 15:00 reaches 00:00, never locks input) -->
+  <div id="overtime-banner" class="overtime-banner" hidden>
+    <span>&#9201; <strong>15:00 reminder reached</strong> — the timer is now counting overtime (<strong id="overtime-inline">+00:00</strong>) so you can finish your task at your own pace without losing any work.</span>
+  </div>
+
+  <!-- MAIN WORKSPACE -->
+  <main class="main-container">
+    <!-- SKILL ROTATION & NON-REPEATING GENERATOR BAR -->
+    <section class="control-bar" aria-label="Section selection and task generator">
+      <div class="skill-tabs" role="tablist">
+        <button id="tab-reading" class="skill-tab active" data-section="reading" type="button" role="tab">
+          <span>&#128214; Reading</span>
+          <span id="rec-reading" class="rec-pill" hidden>Today</span>
+        </button>
+        <button id="tab-writing" class="skill-tab" data-section="writing" type="button" role="tab">
+          <span>&#9997;&#65039; Writing</span>
+          <span id="rec-writing" class="rec-pill" hidden>Today</span>
+        </button>
+        <button id="tab-listening" class="skill-tab" data-section="listening" type="button" role="tab">
+          <span>&#127911; Listening</span>
+          <span id="rec-listening" class="rec-pill" hidden>Today</span>
+        </button>
+        <button id="tab-speaking" class="skill-tab" data-section="speaking" type="button" role="tab">
+          <span>&#127908; Speaking</span>
+          <span id="rec-speaking" class="rec-pill" hidden>Today</span>
+        </button>
+      </div>
+
+      <div class="task-generator-controls">
+        <select id="writing-submode-select" class="submode-select" aria-label="Writing Task Mode" hidden>
+          <option value="any">Writing: Auto-Rotate (Task 1 &amp; Task 2)</option>
+          <option value="task1">Academic Task 1 (Chart/Graph 15m Sprint)</option>
+          <option value="task2">Academic Task 2 (Essay Core / Full Essay)</option>
+        </select>
+
+        <button id="btn-next-unseen" class="btn-secondary" type="button" title="Load next unseen task from bank">
+          <span>&#8634; Next Unseen Task</span>
+        </button>
+
+        <button id="btn-generate-ai" class="btn-primary" type="button" title="Generate a brand-new unseen IELTS task using Gemini AI">
+          <span>&#10024; New AI Task (Non-Repeating)</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- SPLIT-PANE FOCUS STUDIO -->
+    <section class="workspace-grid">
+      <!-- LEFT PANE: STIMULUS (Passage / Chart / Audio Player / Cue Card) -->
+      <article class="pane-card" aria-label="Task Stimulus">
+        <div class="pane-header">
+          <div class="pane-title-group">
+            <span id="stimulus-badge" class="section-badge">READING</span>
+            <span id="stimulus-topic" class="topic-tag">Academic Topic</span>
+          </div>
+          <span id="stimulus-tasktype" class="topic-tag">15-Min Workout</span>
+        </div>
+        <div id="stimulus-body" class="pane-body">
+          <!-- Dynamically populated by app.js -->
+        </div>
+      </article>
+
+      <!-- RIGHT PANE: CANDIDATE RESPONSE SHEET -->
+      <article class="pane-card" aria-label="Candidate Answer Area">
+        <div class="pane-header">
+          <div class="pane-title-group">
+            <span class="section-badge">YOUR RESPONSE</span>
+            <span id="response-status-tag" class="topic-tag">In Progress &bull; Auto-Saved</span>
+          </div>
+          <button id="btn-clear-draft" class="btn-secondary" type="button" style="padding:0.28rem 0.65rem;font-size:0.76rem;">
+            Clear Answer
+          </button>
+        </div>
+        <div id="response-body" class="pane-body">
+          <!-- Dynamically populated by app.js -->
+        </div>
+      </article>
+    </section>
+
+    <!-- IELTS BAND SCORE & EXAMINER CORRECTION REPORT -->
+    <section id="evaluation-section" class="evaluation-section" aria-live="polite" hidden>
+      <!-- Dynamically populated after submission -->
+    </section>
+  </main>
+
+  <!-- MODAL 1: NON-REPEATING HISTORY & BAND ANALYTICS -->
+  <div id="modal-history" class="modal-backdrop" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-history-title">
+      <div class="modal-header">
+        <h2 id="modal-history-title" class="modal-title">Completed Practice History &amp; Band Tracker</h2>
+        <button id="btn-close-history" class="icon-btn" type="button" aria-label="Close History">&#10005;</button>
+      </div>
+      <div class="modal-body">
+        <div id="history-stats-row" class="history-stats-row"></div>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.9rem;">
+          <p style="font-size:0.83rem;color:var(--text-secondary);">
+            Completed tasks are permanently excluded from future workouts so questions never repeat. Click any session to review your feedback.
+          </p>
+          <div style="display:flex;gap:0.45rem;">
+            <button id="btn-export-history" class="btn-secondary" type="button" style="padding:0.35rem 0.7rem;font-size:0.78rem;">
+              Export JSON
+            </button>
+            <label class="btn-secondary" style="padding:0.35rem 0.7rem;font-size:0.78rem;cursor:pointer;">
+              Import JSON
+              <input id="input-import-history" type="file" accept="application/json" hidden />
+            </label>
+          </div>
+        </div>
+
+        <div id="history-list" class="history-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 2: GEMINI API KEY & SETTINGS -->
+  <div id="modal-settings" class="modal-backdrop" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-settings-title" style="max-width:540px;">
+      <div class="modal-header">
+        <h2 id="modal-settings-title" class="modal-title">Google Gemini API &amp; Examiner Settings</h2>
+        <button id="btn-close-settings" class="icon-btn" type="button" aria-label="Close Settings">&#10005;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-field">
+          <label for="input-gemini-key" class="form-label">Google Gemini API Key (Stored locally in your browser)</label>
+          <input id="input-gemini-key" class="form-input" type="password" placeholder="AIzaSy..." autocomplete="off" />
+          <p class="helper-text">
+            Used to generate infinite non-repeating IELTS Academic tasks and grade your Writing &amp; Speaking (including voice recordings) with official IELTS Band 0–9 descriptors. Get a free key at
+            <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" style="color:var(--accent-primary);font-weight:600;">Google AI Studio</a>.
+          </p>
+        </div>
+
+        <div style="display:flex;justify-content:flex-end;gap:0.6rem;margin-top:1.25rem;">
+          <button id="btn-clear-api-key" class="btn-secondary" type="button">Remove Key</button>
+          <button id="btn-save-api-key" class="btn-primary" type="button">Save &amp; Connect</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
