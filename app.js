@@ -374,8 +374,11 @@ function renderLeftStimulus(task) {
       </div>
     `;
 
-    document.getElementById('btn-highlight-text')?.addEventListener('click', highlightSelectedPassageText);
+    const hlBtn = document.getElementById('btn-highlight-text');
+    hlBtn?.addEventListener('mousedown', (e) => e.preventDefault());
+    hlBtn?.addEventListener('click', highlightSelectedPassageText);
     document.getElementById('btn-clear-highlights')?.addEventListener('click', () => {
+      state.cachedPassageRange = null;
       renderLeftStimulus(task);
     });
     return;
@@ -1046,11 +1049,24 @@ function getObjectiveAnswersFromDOM(task) {
 // ==========================================================================
 
 function highlightSelectedPassageText() {
-  const sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
-  const range = sel.getRangeAt(0);
   const passageBox = document.getElementById('reading-passage-content');
-  if (!passageBox || !passageBox.contains(range.commonAncestorContainer)) return;
+  if (!passageBox) return;
+
+  const sel = window.getSelection();
+  let range = null;
+  if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
+    const candidate = sel.getRangeAt(0);
+    if (passageBox.contains(candidate.commonAncestorContainer)) {
+      range = candidate;
+    }
+  }
+  // Fallback to cached touch selection on iOS/Android if tapping the button collapsed selection
+  if (!range && state.cachedPassageRange) {
+    if (passageBox.contains(state.cachedPassageRange.commonAncestorContainer)) {
+      range = state.cachedPassageRange;
+    }
+  }
+  if (!range || range.collapsed) return;
 
   try {
     const fragment = range.extractContents();
@@ -1063,7 +1079,7 @@ function highlightSelectedPassageText() {
 
     const mark = document.createElement('mark');
     mark.className = 'user-highlight';
-    mark.title = 'Click to remove highlight';
+    mark.title = 'Tap or click to remove highlight';
     mark.addEventListener('click', (e) => {
       e.stopPropagation();
       const parent = mark.parentNode;
@@ -1073,7 +1089,8 @@ function highlightSelectedPassageText() {
     });
     mark.appendChild(fragment);
     range.insertNode(mark);
-    sel.removeAllRanges();
+    sel?.removeAllRanges();
+    state.cachedPassageRange = null;
   } catch (e) {
     // Ignore if selection crosses block boundaries
   }
@@ -1096,7 +1113,7 @@ function mountStudioAudioUrl(wavUrl) {
   }
   aud.onplay = () => {
     startTimerIfNotRunning();
-    stopListeningAudio();
+    stopListeningAudio(false);
   };
   aud.onended = () => {
     state.listeningPlayCount += 1;
@@ -1164,7 +1181,7 @@ function getRankedSpeakerVoices(accentFilter = 'auto') {
   return (enVoices.length > 0 ? enVoices : allVoices).slice().sort((a, b) => scoreVoice(b) - scoreVoice(a));
 }
 
-function stopListeningAudio() {
+function stopListeningAudio(pauseStudio = true) {
   if (state.ttsKeepAliveInterval) {
     clearInterval(state.ttsKeepAliveInterval);
     state.ttsKeepAliveInterval = null;
@@ -1175,6 +1192,16 @@ function stopListeningAudio() {
   }
   if ('speechSynthesis' in window) {
     window.speechSynthesis.cancel();
+  }
+  if (pauseStudio) {
+    const aud = document.getElementById('gemini-studio-audio');
+    if (aud && !aud.paused) {
+      try {
+        aud.pause();
+      } catch (e) {
+        // ignore
+      }
+    }
   }
   state.isPlayingAudio = false;
   const icon = document.getElementById('listening-play-icon');
@@ -1962,10 +1989,38 @@ function initApp() {
   applyTheme(state.theme);
   updateHeaderBadges();
 
-  // Pre-warm browser TTS voices list
+  // Pre-warm browser TTS voices list (including async voice loading on iOS/Android/Chrome)
   if ('speechSynthesis' in window) {
     window.speechSynthesis.getVoices();
+    window.speechSynthesis.onvoiceschanged = () => {
+      window.speechSynthesis.getVoices();
+    };
   }
+
+  // Cache active text selection inside Reading passage for mobile/iPad touch highlighting
+  document.addEventListener('selectionchange', () => {
+    const passageBox = document.getElementById('reading-passage-content');
+    if (!passageBox) return;
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0 && !sel.isCollapsed) {
+      const r = sel.getRangeAt(0);
+      if (passageBox.contains(r.commonAncestorContainer)) {
+        state.cachedPassageRange = r.cloneRange();
+      }
+    }
+  });
+
+  // Mobile & iPad View Switcher (Split / Stimulus / Response / Stacked)
+  document.querySelectorAll('.mobile-view-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const viewMode = btn.getAttribute('data-view') || 'split';
+      const grid = document.getElementById('workspace-grid');
+      if (grid) grid.setAttribute('data-mobile-view', viewMode);
+      document.querySelectorAll('.mobile-view-btn').forEach((b) => {
+        b.classList.toggle('active', b === btn);
+      });
+    });
+  });
 
   // Start on today's recommended skill in the daily rotation
   const recommended = computeRecommendedSkillForToday();

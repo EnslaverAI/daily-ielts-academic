@@ -101,10 +101,26 @@
       </div>
     </section>
 
+    <!-- MOBILE & IPAD VIEW SWITCHER (Hidden on PC > 1024px) -->
+    <nav id="mobile-pane-switcher" class="mobile-pane-switcher" aria-label="Mobile and Tablet View Switcher">
+      <button type="button" class="mobile-view-btn active" data-view="split">
+        &#129695; Split View
+      </button>
+      <button type="button" class="mobile-view-btn" data-view="stimulus">
+        &#128214; Task / Passage
+      </button>
+      <button type="button" class="mobile-view-btn" data-view="response">
+        &#9997;&#65039; Answer Sheet
+      </button>
+      <button type="button" class="mobile-view-btn" data-view="stacked">
+        &#8597; Stacked
+      </button>
+    </nav>
+
     <!-- SPLIT-PANE FOCUS STUDIO -->
-    <section class="workspace-grid">
+    <section id="workspace-grid" class="workspace-grid" data-mobile-view="split">
       <!-- LEFT PANE: STIMULUS (Passage / Chart / Audio Player / Cue Card) -->
-      <article class="pane-card" aria-label="Task Stimulus">
+      <article id="pane-stimulus" class="pane-card" aria-label="Task Stimulus">
         <div class="pane-header">
           <div class="pane-title-group">
             <span id="stimulus-badge" class="section-badge">READING</span>
@@ -118,7 +134,7 @@
       </article>
 
       <!-- RIGHT PANE: CANDIDATE RESPONSE SHEET -->
-      <article class="pane-card" aria-label="Candidate Answer Area">
+      <article id="pane-response" class="pane-card" aria-label="Candidate Answer Area">
         <div class="pane-header">
           <div class="pane-title-group">
             <span class="section-badge">YOUR RESPONSE</span>

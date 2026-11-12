@@ -25,6 +25,7 @@
   --accent-primary: #1B4332;
   --accent-primary-hover: #133024;
   --accent-primary-soft: #E7F0EC;
+  --accent-soft: #E7F0EC;
   --accent-secondary: #2D6A4F;
 
   /* Semantic Status & IELTS Section Accents */
@@ -82,6 +83,7 @@
   --accent-primary: #2D6A4F;
   --accent-primary-hover: #40916C;
   --accent-primary-soft: rgba(82, 183, 136, 0.14);
+  --accent-soft: rgba(82, 183, 136, 0.14);
   --accent-secondary: #52B788;
 
   --amber-warn: #FBBF24;
@@ -1391,3 +1393,421 @@ button {
   color: var(--text-muted);
   margin-top: 0.35rem;
 }
+
+.btn-ai {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: var(--radius-sm);
+  background: var(--accent-primary-soft);
+  color: var(--accent-primary);
+  border: 1px solid var(--accent-primary);
+  font-weight: 700;
+  transition: all var(--transition-fast);
+}
+
+.btn-ai:hover:not(:disabled) {
+  background: var(--accent-primary);
+  color: var(--text-on-accent);
+}
+
+.btn-ai:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ==========================================================================
+   MOBILE PHONE & IPAD / TABLET OPTIMIZATION (PC > 1024px 100% UNCHANGED)
+   ========================================================================== */
+
+/* Hidden on PC Desktop (> 1024px) */
+.mobile-pane-switcher {
+  display: none;
+}
+
+@media (max-width: 1024px) {
+  /* Prevent iOS Safari auto-zoom when tapping inputs/selects/textareas */
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+
+  /* Show the View Mode Switcher Bar on iPad & Mobile Phones */
+  .mobile-pane-switcher {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.35rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    padding: 0.35rem;
+    box-shadow: var(--shadow-sm);
+    position: sticky;
+    top: 64px;
+    z-index: 35;
+  }
+
+  .mobile-view-btn {
+    padding: 0.48rem 0.4rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: all var(--transition-fast);
+  }
+
+  .mobile-view-btn.active {
+    background: var(--accent-primary);
+    color: var(--text-on-accent);
+    box-shadow: var(--shadow-xs);
+  }
+
+  /* View Mode 1: Stimulus / Passage Only */
+  .workspace-grid[data-mobile-view="stimulus"] {
+    grid-template-columns: 1fr;
+  }
+  .workspace-grid[data-mobile-view="stimulus"] #pane-response {
+    display: none;
+  }
+
+  /* View Mode 2: Answer Sheet Only */
+  .workspace-grid[data-mobile-view="response"] {
+    grid-template-columns: 1fr;
+  }
+  .workspace-grid[data-mobile-view="response"] #pane-stimulus {
+    display: none;
+  }
+
+  /* View Mode 3: Stacked (Full Vertical Scroll) */
+  .workspace-grid[data-mobile-view="stacked"] {
+    grid-template-columns: 1fr;
+  }
+  .workspace-grid[data-mobile-view="stacked"] .pane-body {
+    max-height: none;
+  }
+}
+
+/* iPad / Tablet Landscape & Portrait (769px – 1024px):
+   In "Split View", keep Side-by-Side 2-Column Exam Layout with independent scrolling! */
+@media (min-width: 769px) and (max-width: 1024px) {
+  .app-header {
+    padding: 0.65rem 1rem;
+  }
+
+  .brand-subtitle {
+    display: none;
+  }
+
+  .main-container {
+    padding: 1rem 1rem 2rem;
+    gap: 0.9rem;
+  }
+
+  .control-bar {
+    padding: 0.7rem 0.9rem;
+    gap: 0.65rem;
+  }
+
+  .workspace-grid[data-mobile-view="split"] {
+    grid-template-columns: 1fr 1fr;
+    gap: 0.9rem;
+  }
+
+  .workspace-grid[data-mobile-view="split"] .pane-body {
+    padding: 1.1rem;
+    max-height: calc(100vh - 245px);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* Mobile Phones (<= 768px):
+   Compact 2-row sticky header, 2x2 skill tabs, Top/Bottom Split Reader, & responsive maps */
+@media (max-width: 768px) {
+  .app-header {
+    padding: 0.5rem 0.75rem;
+  }
+
+  .header-inner {
+    flex-wrap: wrap;
+    gap: 0.45rem;
+  }
+
+  .brand-group {
+    gap: 0.5rem;
+  }
+
+  .brand-mark {
+    width: 30px;
+    height: 30px;
+    font-size: 0.98rem;
+  }
+
+  .brand-title {
+    font-size: 1.02rem;
+  }
+
+  .brand-subtitle {
+    display: none;
+  }
+
+  .timer-dock {
+    padding: 0.25rem 0.5rem 0.25rem 0.7rem;
+    gap: 0.45rem;
+    margin-left: auto;
+  }
+
+  .timer-readout {
+    font-size: 1rem;
+    min-width: 3.2rem;
+  }
+
+  .timer-tag {
+    display: none;
+  }
+
+  .header-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 0.4rem;
+    padding-top: 0.35rem;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .pill-btn {
+    justify-content: center;
+    padding: 0.38rem 0.55rem;
+    font-size: 0.76rem;
+  }
+
+  .mobile-pane-switcher {
+    top: 92px;
+  }
+
+  .main-container {
+    padding: 0.75rem 0.65rem 2rem;
+    gap: 0.75rem;
+  }
+
+  .control-bar {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 0.65rem;
+    gap: 0.6rem;
+  }
+
+  .skill-tabs {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.35rem;
+    width: 100%;
+  }
+
+  .skill-tab {
+    justify-content: center;
+    padding: 0.5rem 0.5rem;
+    font-size: 0.82rem;
+  }
+
+  .task-generator-controls {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.4rem;
+    width: 100%;
+  }
+
+  #writing-submode-select:not([hidden]) {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .task-generator-controls .btn-secondary,
+  .task-generator-controls .btn-primary {
+    justify-content: center;
+    padding: 0.5rem 0.45rem;
+    font-size: 0.78rem;
+    text-align: center;
+  }
+
+  /* On Mobile Phone, "Split View" gives a synchronized Top Reader (38vh) + Bottom Answer Sheet (44vh)
+     so students can read the passage/chart while answering questions without losing their place! */
+  .workspace-grid[data-mobile-view="split"] {
+    grid-template-columns: 1fr;
+    gap: 0.65rem;
+  }
+
+  .workspace-grid[data-mobile-view="split"] #pane-stimulus .pane-body {
+    max-height: 38vh;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .workspace-grid[data-mobile-view="split"] #pane-response .pane-body {
+    max-height: 44vh;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .pane-header {
+    padding: 0.65rem 0.85rem;
+    gap: 0.4rem;
+  }
+
+  .pane-body {
+    padding: 0.9rem;
+  }
+
+  .stimulus-title {
+    font-size: 1.18rem;
+  }
+
+  .stimulus-instructions {
+    font-size: 0.81rem;
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 0.85rem;
+  }
+
+  .reading-passage {
+    font-size: 0.98rem;
+    line-height: 1.68;
+  }
+
+  .reading-paragraph {
+    gap: 0.5rem;
+  }
+
+  .writing-prompt-box {
+    padding: 0.85rem;
+    font-size: 0.98rem;
+  }
+
+  .writing-textarea {
+    min-height: 240px;
+    padding: 0.85rem;
+  }
+
+  .chart-figure {
+    padding: 0.5rem;
+  }
+
+  /* Scale 3x3 Maps cleanly on narrow mobile screens */
+  .ielts-map-grid {
+    gap: 4px !important;
+  }
+
+  .ielts-map-cell {
+    padding: 5px 4px !important;
+    min-height: 54px !important;
+    word-break: break-word;
+    hyphens: auto;
+  }
+
+  .ielts-map-cell strong,
+  .ielts-map-cell span {
+    font-size: 10px !important;
+    line-height: 1.2 !important;
+  }
+
+  .listening-player-card {
+    padding: 0.85rem;
+  }
+
+  .audio-controls-row {
+    gap: 0.55rem;
+  }
+
+  .question-card {
+    padding: 0.75rem 0.85rem;
+  }
+
+  .option-pill {
+    padding: 0.45rem 0.65rem;
+    font-size: 0.82rem;
+  }
+
+  .fill-input {
+    max-width: 100%;
+  }
+
+  .submit-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.6rem;
+  }
+
+  .submit-bar .btn-primary {
+    width: 100%;
+    justify-content: center;
+    padding: 0.7rem 1rem;
+    font-size: 0.92rem;
+  }
+
+  /* Evaluation Report Mobile Polish */
+  .eval-banner {
+    padding: 1rem;
+    gap: 0.85rem;
+  }
+
+  .band-hero {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.65rem;
+  }
+
+  .eval-banner .btn-secondary {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .criteria-grid {
+    grid-template-columns: 1fr 1fr;
+    padding: 0.85rem;
+    gap: 0.55rem;
+  }
+
+  .eval-body {
+    padding: 1rem;
+    gap: 1rem;
+  }
+
+  /* Modals on Mobile */
+  .modal-backdrop {
+    padding: 0.5rem;
+  }
+
+  .modal-card {
+    max-height: 92vh;
+  }
+
+  .modal-header {
+    padding: 0.85rem 1rem;
+  }
+
+  .modal-body {
+    padding: 0.95rem;
+  }
+
+  .history-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.55rem;
+  }
+}
+
+@media (max-width: 400px) {
+  .mobile-view-btn {
+    font-size: 0.7rem;
+    padding: 0.42rem 0.25rem;
+  }
+
+  .criteria-grid {
+    grid-template-columns: 1fr;
+  }
+}
+

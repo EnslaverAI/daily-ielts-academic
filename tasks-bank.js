@@ -40,7 +40,7 @@ export function renderListeningMapSVG(mapSpec) {
           ? `<div style="display:inline-block;background:var(--accent-primary);color:#fff;font-family:var(--font-mono);font-size:13px;font-weight:800;padding:2px 9px;border-radius:4px;margin-bottom:4px;">Location [ ${escapeXml(lm.code)} ]</div>`
           : '';
       return `
-        <div style="background:${bg};border:${border};border-radius:6px;padding:10px 8px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;min-height:74px;">
+        <div class="ielts-map-cell" style="background:${bg};border:${border};border-radius:6px;padding:10px 8px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;min-height:74px;">
           <span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);font-weight:700;">${escapeXml(lm.pos || '')}</span>
           ${badge}
           <strong style="font-size:11.5px;color:var(--text-primary);line-height:1.3;">${escapeXml(lm.label || '')}</strong>
@@ -57,7 +57,7 @@ export function renderListeningMapSVG(mapSpec) {
           &#129517; Compass: N &uarr; | W &larr; &rarr; E | S &darr;
         </div>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:8px;">
+      <div class="ielts-map-grid" style="display:grid;grid-template-columns:repeat(3, 1fr);gap:8px;">
         ${cellsHtml}
       </div>
     </div>
@@ -96,7 +96,7 @@ export function renderTask1ChartSVG(spec) {
       zones
         .map(
           (z) => `
-        <div style="${statusStyle(z.status)}border-radius:5px;padding:7px 6px;min-height:60px;display:flex;flex-direction:column;justify-content:center;text-align:center;">
+        <div class="ielts-map-cell" style="${statusStyle(z.status)}border-radius:5px;padding:7px 6px;min-height:60px;display:flex;flex-direction:column;justify-content:center;text-align:center;">
           <span style="font-family:var(--font-mono);font-size:9.5px;font-weight:700;color:var(--text-muted);">${escapeXml(z.pos)}</span>
           <span style="font-size:11px;font-weight:600;color:var(--text-primary);line-height:1.25;">${escapeXml(z.label)}</span>
         </div>`
@@ -111,19 +111,19 @@ export function renderTask1ChartSVG(spec) {
         </div>
         ${
           spec.waterFeature
-            ? `<div style="background:#DBEAFE;color:#1E3A8A;font-size:11px;font-weight:700;text-align:center;padding:4px;border-radius:4px;margin-bottom:8px;">&#127754; Northern Boundary: ${escapeXml(spec.waterFeature)}</div>`
+            ? `<div style="background:var(--navy-soft);color:var(--navy-info);font-size:11px;font-weight:700;text-align:center;padding:4px;border-radius:4px;margin-bottom:8px;">&#127754; Northern Boundary: ${escapeXml(spec.waterFeature)}</div>`
             : ''
         }
         <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(230px, 1fr));gap:12px;">
           <div style="background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:6px;padding:8px;">
             <div style="font-size:12px;font-weight:700;text-align:center;margin-bottom:6px;color:var(--text-primary);">${escapeXml(spec.beforeTitle || 'Map A — Past Layout')}</div>
-            <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:5px;">
+            <div class="ielts-map-grid" style="display:grid;grid-template-columns:repeat(3, 1fr);gap:5px;">
               ${renderGrid(spec.beforeZones)}
             </div>
           </div>
           <div style="background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:6px;padding:8px;">
             <div style="font-size:12px;font-weight:700;text-align:center;margin-bottom:6px;color:var(--text-primary);">${escapeXml(spec.afterTitle || 'Map B — Present / Planned Layout')}</div>
-            <div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:5px;">
+            <div class="ielts-map-grid" style="display:grid;grid-template-columns:repeat(3, 1fr);gap:5px;">
               ${renderGrid(spec.afterZones)}
             </div>
           </div>
